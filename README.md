@@ -1,14 +1,17 @@
 # KION Music Provider for Music Assistant
 
-Music provider for [Music Assistant](https://music-assistant.io) that adds KION Music (MTS)
-as a music source with full browse, search, and playback support.
+English | [Русский](README.ru.md)
+
+> Stream music from KION Music (MTS) with full browse, search, and playback support.
 
 ## Features
 
-- Browse: Liked Tracks, My Mix radio, Artists, Albums
-- Search: tracks, artists, albums, playlists
-- Playback: AAC/MP3
-- Library sync: Liked Tracks → MA library
+| Feature | Details |
+|---------|---------|
+| Browse | Liked Tracks, My Mix radio, Artists, Albums, Playlists |
+| Search | Tracks, artists, albums, playlists |
+| Playback | MP3 (320 kbps), FLAC (lossless) |
+| Library sync | Liked Tracks → MA library |
 
 ## Compatibility
 
@@ -18,17 +21,21 @@ as a music source with full browse, search, and playback support.
 
 ## Installation
 
-This provider is installed automatically as part of Music Assistant.
+Installed automatically as part of Music Assistant.
 
 ### Configuration
 
 1. Settings → Music Sources → Add Source → KION Music
-2. Enter your KION Music credentials
+2. Enter your KION Music OAuth token
 3. Save
 
-## Development
+## Documentation
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for development setup.
+| Guide | Description |
+|-------|-------------|
+| [Configuration](docs/configuration.md) | All settings and options |
+| [Development](docs/development.md) | Dev setup, tests, linting |
+| [Contributing](docs/contributing.md) | Bug reports, feature requests, PRs |
 
 ## License
 
