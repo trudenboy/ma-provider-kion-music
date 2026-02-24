@@ -41,7 +41,7 @@ class KionMusicStreamingManager:
         self.logger = provider.logger
 
     def _track_id_from_item_id(self, item_id: str) -> str:
-        """Extract API track ID from item_id (may be track_id@station_id for My Wave)."""
+        """Extract API track ID from item_id (may be track_id@station_id for My Mix)."""
         if RADIO_TRACK_ID_SEP in item_id:
             return item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
         return item_id
@@ -49,7 +49,7 @@ class KionMusicStreamingManager:
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get stream details for a track.
 
-        :param item_id: Track ID or composite track_id@station_id for My Wave.
+        :param item_id: Track ID or composite track_id@station_id for My Mix.
         :return: StreamDetails for the track (item_id preserved for on_streamed).
         :raises MediaNotFoundError: If stream URL cannot be obtained.
         """
