@@ -32,10 +32,10 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from kion_music import Album as YandexAlbum
-    from kion_music import Artist as YandexArtist
-    from kion_music import Playlist as YandexPlaylist
-    from kion_music import Track as YandexTrack
+    from yandex_music import Album as YandexAlbum
+    from yandex_music import Artist as YandexArtist
+    from yandex_music import Playlist as YandexPlaylist
+    from yandex_music import Track as YandexTrack
 
     from .provider import KionMusicProvider
 

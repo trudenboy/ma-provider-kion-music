@@ -18,22 +18,22 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
-from kion_music import Album as YandexAlbum
-from kion_music import Artist as YandexArtist
-from kion_music import ClientAsync, MixLink, Search, TrackShort
-from kion_music import Playlist as YandexPlaylist
-from kion_music import Track as YandexTrack
-from kion_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
-from kion_music.utils.sign_request import DEFAULT_SIGN_KEY
+from yandex_music import Album as YandexAlbum
+from yandex_music import Artist as YandexArtist
+from yandex_music import ClientAsync, MixLink, Search, TrackShort
+from yandex_music import Playlist as YandexPlaylist
+from yandex_music import Track as YandexTrack
+from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
+from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 if TYPE_CHECKING:
-    from kion_music import DownloadInfo
-    from kion_music.feed.feed import Feed
-    from kion_music.landing.chart_info import ChartInfo
-    from kion_music.landing.landing import Landing
-    from kion_music.landing.landing_list import LandingList
-    from kion_music.rotor.dashboard import Dashboard
-    from kion_music.rotor.station_result import StationResult
+    from yandex_music import DownloadInfo
+    from yandex_music.feed.feed import Feed
+    from yandex_music.landing.chart_info import ChartInfo
+    from yandex_music.landing.landing import Landing
+    from yandex_music.landing.landing_list import LandingList
+    from yandex_music.rotor.dashboard import Dashboard
+    from yandex_music.rotor.station_result import StationResult
 
 from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
 
