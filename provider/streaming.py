@@ -22,7 +22,7 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from kion_music import DownloadInfo
+    from yandex_music import DownloadInfo
 
     from .provider import KionMusicProvider
 
