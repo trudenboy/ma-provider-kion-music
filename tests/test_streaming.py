@@ -135,5 +135,5 @@ def test_get_content_type_flac_mp4_returns_flac(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
     """flac-mp4 codec from get-file-info is mapped to ContentType.FLAC."""
-    assert streaming_manager._get_content_type("flac-mp4") == ContentType.FLAC
-    assert streaming_manager._get_content_type("FLAC-MP4") == ContentType.FLAC
+    assert streaming_manager._get_content_type("flac-mp4")[0] == ContentType.FLAC
+    assert streaming_manager._get_content_type("FLAC-MP4")[0] == ContentType.FLAC
