@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
-# Prefer flac-mp4/aac-mp4 (Yandex API moved to these formats around 2025)
+# Prefer flac-mp4/aac-mp4 (Kion API moved to these formats around 2025)
 GET_FILE_INFO_CODECS = "flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4"
 
 LOGGER = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ _T = TypeVar("_T")
 
 
 class KionMusicClient:
-    """Wrapper around yandex-music-api ClientAsync."""
+    """Wrapper around kion-music-api ClientAsync."""
 
     def __init__(self, token: str, base_url: str | None = None) -> None:
         """Initialize the KION Music client.
@@ -120,7 +120,7 @@ class KionMusicClient:
     async def _reconnect(self) -> None:
         """Disconnect and connect again to recover from Server disconnected / connection errors.
 
-        Enforces a 30-second cooldown between reconnect attempts to avoid hammering Yandex
+        Enforces a 30-second cooldown between reconnect attempts to avoid hammering Kion
         and triggering rate limiting. A lock ensures concurrent callers don't bypass the cooldown.
         """
         async with self._reconnect_lock:
@@ -233,7 +233,7 @@ class KionMusicClient:
         """Send rotor station feedback for My Wave recommendations.
 
         Used to report radioStarted, trackStarted, trackFinished, skip so that
-        Yandex can improve subsequent recommendations.
+        Kion can improve subsequent recommendations.
 
         :param station_id: Station ID (e.g. ROTOR_STATION_MY_WAVE).
         :param feedback_type: One of 'radioStarted', 'trackStarted', 'trackFinished', 'skip'.
@@ -556,7 +556,7 @@ class KionMusicClient:
                     withListeningFinished=True,
                 )
             except TypeError:
-                # Older yandex-music may not accept these kwargs
+                # Older kion-music may not accept these kwargs
                 return await c.albums_with_tracks(album_id)
 
         try:
@@ -666,7 +666,7 @@ class KionMusicClient:
         The /tracks/{id}/download-info endpoint often returns only MP3; get-file-info
         with quality=lossless and codecs=flac,... returns FLAC when available.
 
-        Uses manual sign calculation matching yandex-music-downloader-realflac.
+        Uses manual sign calculation matching kion-music-downloader-realflac.
         Uses _call_with_retry for automatic reconnection on transient failures.
 
         :param track_id: Track ID.
@@ -687,9 +687,9 @@ class KionMusicClient:
                 "codecs": GET_FILE_INFO_CODECS,
                 "transports": "encraw",
             }
-            # Build sign string explicitly matching Yandex API specification:
+            # Build sign string explicitly matching Kion API specification:
             # concatenate ts + trackId + quality + codecs (commas stripped) + transports.
-            # Comma stripping matches yandex-music-downloader-realflac reference implementation
+            # Comma stripping matches kion-music-downloader-realflac reference implementation
             # (see get_file_info signing in that project).
             codecs_for_sign = GET_FILE_INFO_CODECS.replace(",", "")
             param_string = f"{timestamp}{track_id}lossless{codecs_for_sign}encraw"
@@ -699,8 +699,8 @@ class KionMusicClient:
                 hashlib.sha256,
             )
             # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
-            # Yandex API expects exactly 43 chars (one "=" removed).
-            # Matches yandex-music-downloader-realflac reference implementation.
+            # Kion API expects exactly 43 chars (one "=" removed).
+            # Matches kion-music-downloader-realflac reference implementation.
             params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
             url = f"{client.base_url}/get-file-info"
             return url, params
@@ -907,7 +907,7 @@ class KionMusicClient:
     async def get_waves_landing(self) -> list[dict[str, Any]] | None:
         """Get featured wave stations from /landing-blocks/waves endpoint.
 
-        Returns Yandex-curated wave categories with station items — the "Волны"
+        Returns Kion-curated wave categories with station items — the "Волны"
         landing page content, separate from the full rotor/stations/list and from
         the AI mixes-waves sets.
 
@@ -919,7 +919,7 @@ class KionMusicClient:
         """Fetch wave categories from a /landing-blocks/<block> endpoint.
 
         Note: Response keys are auto-converted from camelCase to snake_case
-        by the yandex-music library's JSON parser.
+        by the kion-music library's JSON parser.
 
         :param block: Block name, e.g. 'waves' or 'mixes-waves'.
         :return: List of wave category dicts, or None on error.
@@ -975,14 +975,14 @@ class KionMusicClient:
                 continue
             if category in ("user", "local-language"):
                 # Skip personal stations (My Wave is handled separately)
-                # and local-language stations (Yandex returns overlapping tracks across them)
+                # and local-language stations (Kion returns overlapping tracks across them)
                 continue
             station_id = f"{category}:{tag}"
             name = station.name or result.rup_title or tag
             image_url: str | None = None
             raw_url = station.full_image_url or (station.icon.image_url if station.icon else None)
             if raw_url:
-                # Yandex avatar URIs use '%%' as a size placeholder; replace it with
+                # Kion avatar URIs use '%%' as a size placeholder; replace it with
                 # the desired size. If no placeholder, append the size as a suffix
                 # since these URLs return HTTP 400 without a size component.
                 if not raw_url.startswith("http"):

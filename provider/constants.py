@@ -19,7 +19,7 @@ LABEL_AUTH_INSTRUCTIONS = "auth_instructions_label"
 
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
-DEFAULT_BASE_URL: Final[str] = "https://api.music.yandex.net"
+DEFAULT_BASE_URL: Final[str] = "https://api.music.kion.net"
 
 # Quality options (matching reference implementation)
 QUALITY_EFFICIENT = "efficient"  # Low quality, efficient bandwidth (~64kbps AAC)
@@ -54,9 +54,9 @@ YANDEX_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
     {
         "яндекс музыка",
         "яндекс.музыка",
-        "yandex.music",
+        "kion.music",
         "yandexmusic",
-        "yandex music",
+        "kion music",
     }
 )
 
