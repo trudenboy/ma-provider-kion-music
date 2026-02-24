@@ -450,13 +450,13 @@ class KionMusicProvider(MusicProvider):
         return all_tracks
 
     def _parse_my_wave_track(self, yt: Any, seen_ids: set[str]) -> Track | None:
-        """Parse a Yandex track into a My Wave Track with composite item_id.
+        """Parse a Kion track into a My Wave Track with composite item_id.
 
         Extracts the track_id, checks for duplicates in the seen_ids set,
         sets composite item_id (track_id@station_id), and updates provider_mappings.
         Callers using shared state must hold _my_wave_lock.
 
-        :param yt: Yandex track object from rotor station response.
+        :param yt: Kion track object from rotor station response.
         :param seen_ids: Set of already-seen track IDs to check and update.
         :return: Parsed Track with composite item_id, or None if duplicate/invalid.
         """
@@ -836,7 +836,7 @@ class KionMusicProvider(MusicProvider):
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse waves folder (rotor stations by genre/mood/activity/epoch/local).
 
-        Fetches available stations from the Yandex rotor API and groups them by category.
+        Fetches available stations from the Kion rotor API and groups them by category.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -1307,7 +1307,7 @@ class KionMusicProvider(MusicProvider):
         result = SearchResults()
 
         # Determine search type based on requested media types
-        # Map MediaType to Yandex API search type
+        # Map MediaType to Kion API search type
         type_mapping = {
             MediaType.TRACK: "track",
             MediaType.ALBUM: "album",
@@ -1644,9 +1644,9 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 3)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Get similar tracks using Yandex Rotor station for this track.
+        """Get similar tracks using Kion Rotor station for this track.
 
-        Uses rotor station track:{id} so MA radio mode gets Yandex recommendations.
+        Uses rotor station track:{id} so MA radio mode gets Kion recommendations.
 
         :param prov_track_id: Provider track ID (plain or track_id@station_id).
         :param limit: Maximum number of tracks to return.
@@ -2101,7 +2101,7 @@ class KionMusicProvider(MusicProvider):
         if not tracks_list:
             return []
 
-        # Yandex returns TrackShort objects, we need to fetch full track info
+        # Kion returns TrackShort objects, we need to fetch full track info
         track_ids = [
             str(track.track_id) if hasattr(track, "track_id") else str(track.id)
             for track in tracks_list
@@ -2314,7 +2314,7 @@ class KionMusicProvider(MusicProvider):
         """Resolve wave cover image with background color fill for transparent PNGs.
 
         If the image URL has an associated background color (stored in _wave_bg_colors),
-        downloads the PNG from Yandex CDN and composites it on a solid color background
+        downloads the PNG from Kion CDN and composites it on a solid color background
         using Pillow, returning JPEG bytes. Falls back to the original URL on any error.
 
         :param path: Image URL (may include #rrggbb fragment used as cache key).
@@ -2483,7 +2483,7 @@ class KionMusicProvider(MusicProvider):
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Report stream completion for My Wave rotor feedback.
 
-        Sends trackFinished or skip with actual seconds_streamed so Yandex
+        Sends trackFinished or skip with actual seconds_streamed so Kion
         can improve recommendations.
         """
         # Radio feedback always enabled
