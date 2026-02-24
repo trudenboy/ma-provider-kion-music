@@ -14,6 +14,7 @@ test = [
   "syrupy==5.0.0",
   "codespell==2.4.1",
   "music-assistant @ git+https://github.com/music-assistant/server.git@dev",
+  "hass-client>=1.2.0",
   "yandex-music==2.2.0",
   "ruff==0.14.13",
   "mypy==1.19.1",
