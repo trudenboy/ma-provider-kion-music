@@ -21,4 +21,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat: initial provider setup (`cdd1fbc`)
 
+
+<!-- Pre-separation: development in trudenboy/ma-server monorepo -->
+<!-- The following changes were developed in the `trudenboy/ma-server` monorepo before this provider was extracted into its own repository on 2026-02-19. -->
+
+## 2026-02-17
+
+- feat: add configurable My Mix settings and improvements (music-assistant/server#3145)
+
+## 2026-02-10
+
+- feat: provider accepted into upstream Music Assistant (music-assistant/server#3100)
+
+## 2026-02-07
+
+- fix: address PR review — fix base_url, performance, redundant condition, docstrings; add tests
+
+## 2026-02-05
+
+- feat: add KION Music (MTS Music) provider
+- fix: fix playlist tracks not loading in UI
+- fix: fix missing album cover art in library
+
 <!-- changelog entries will be added here by release workflow -->
