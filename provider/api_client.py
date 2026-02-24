@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from yandex_music.rotor.dashboard import Dashboard
     from yandex_music.rotor.station_result import StationResult
 
-from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
+from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (Kion API moved to these formats around 2025)
@@ -175,7 +175,7 @@ class KionMusicClient:
     ) -> tuple[list[YandexTrack], str | None]:
         """Get tracks from a rotor station (e.g. user:onyourwave or track:1234).
 
-        :param station_id: Station ID (e.g. ROTOR_STATION_MY_WAVE or "track:1234" for similar).
+        :param station_id: Station ID (e.g. ROTOR_STATION_MY_MIX or "track:1234" for similar).
         :param queue: Optional track ID for pagination (first track of previous batch).
         :return: Tuple of (list of track objects, batch_id for feedback or None).
         """
@@ -219,7 +219,7 @@ class KionMusicClient:
             pagination; do not pass batch_id).
         :return: Tuple of (list of track objects, batch_id for feedback).
         """
-        return await self.get_rotor_station_tracks(ROTOR_STATION_MY_WAVE, queue=queue)
+        return await self.get_rotor_station_tracks(ROTOR_STATION_MY_MIX, queue=queue)
 
     async def send_rotor_station_feedback(
         self,
@@ -235,7 +235,7 @@ class KionMusicClient:
         Used to report radioStarted, trackStarted, trackFinished, skip so that
         Kion can improve subsequent recommendations.
 
-        :param station_id: Station ID (e.g. ROTOR_STATION_MY_WAVE).
+        :param station_id: Station ID (e.g. ROTOR_STATION_MY_MIX).
         :param feedback_type: One of 'radioStarted', 'trackStarted', 'trackFinished', 'skip'.
         :param batch_id: Optional batch ID from the last get_my_wave_tracks response.
         :param track_id: Track ID (required for trackStarted, trackFinished, skip).

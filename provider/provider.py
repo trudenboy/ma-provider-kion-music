@@ -59,7 +59,7 @@ from .constants import (
     PLAYLIST_ID_SPLITTER,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
-    ROTOR_STATION_MY_WAVE,
+    ROTOR_STATION_MY_MIX,
     TAG_CATEGORY_ACTIVITY,
     TAG_CATEGORY_ERA,
     TAG_CATEGORY_GENRES,
@@ -402,7 +402,7 @@ class KionMusicProvider(MusicProvider):
                 last_batch_id = batch_id
             if not self._my_wave_radio_started_sent and yandex_tracks:
                 sent = await self.client.send_rotor_station_feedback(
-                    ROTOR_STATION_MY_WAVE,
+                    ROTOR_STATION_MY_MIX,
                     "radioStarted",
                     batch_id=batch_id,
                 )
@@ -475,7 +475,7 @@ class KionMusicProvider(MusicProvider):
             return None
 
         seen_ids.add(track_id)
-        t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
+        t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_MIX}"
         for pm in t.provider_mappings:
             if pm.provider_instance == self.instance_id:
                 pm.item_id = t.item_id
@@ -1528,7 +1528,7 @@ class KionMusicProvider(MusicProvider):
                     self._my_wave_batch_id = batch_id
                 if not self._my_wave_radio_started_sent and yandex_tracks:
                     sent = await self.client.send_rotor_station_feedback(
-                        ROTOR_STATION_MY_WAVE,
+                        ROTOR_STATION_MY_MIX,
                         "radioStarted",
                         batch_id=batch_id,
                     )
@@ -2383,7 +2383,7 @@ class KionMusicProvider(MusicProvider):
         # for short tracks that finish before the 30-second periodic callback.
         self._ensure_dont_stop_the_music(prov_item_id)
         if is_playing:
-            if station_id == ROTOR_STATION_MY_WAVE:
+            if station_id == ROTOR_STATION_MY_MIX:
                 batch_id = self._my_wave_batch_id
             else:
                 state = self._wave_states.get(station_id)
@@ -2496,7 +2496,7 @@ class KionMusicProvider(MusicProvider):
         seconds = int(streamdetails.seconds_streamed or 0)
         duration = streamdetails.duration or 0
         feedback_type = "trackFinished" if duration and seconds >= max(0, duration - 10) else "skip"
-        if station_id == ROTOR_STATION_MY_WAVE:
+        if station_id == ROTOR_STATION_MY_MIX:
             batch_id = self._my_wave_batch_id
         else:
             state = self._wave_states.get(station_id)
