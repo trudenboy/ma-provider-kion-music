@@ -213,7 +213,7 @@ class KionMusicClient:
     async def get_my_wave_tracks(
         self, queue: str | int | None = None
     ) -> tuple[list[YandexTrack], str | None]:
-        """Get tracks from the My Wave radio station.
+        """Get tracks from the My Mix radio station.
 
         :param queue: Optional track ID of the last track from the previous batch (API uses it for
             pagination; do not pass batch_id).
@@ -230,7 +230,7 @@ class KionMusicClient:
         track_id: str | None = None,
         total_played_seconds: int | None = None,
     ) -> bool:
-        """Send rotor station feedback for My Wave recommendations.
+        """Send rotor station feedback for My Mix recommendations.
 
         Used to report radioStarted, trackStarted, trackFinished, skip so that
         Kion can improve subsequent recommendations.
@@ -950,7 +950,7 @@ class KionMusicClient:
         """Get available rotor wave stations grouped by category.
 
         Calls rotor_stations_list() — equivalent to the rotor/stations/list API endpoint.
-        Filters out personal stations (type 'user') since My Wave is handled separately.
+        Filters out personal stations (type 'user') since My Mix is handled separately.
 
         :param language: Language for station names (e.g. 'ru', 'en'). Defaults to API default.
         :return: List of (station_id, category, name, image_url) tuples,
@@ -974,7 +974,7 @@ class KionMusicClient:
             if not category or not tag:
                 continue
             if category in ("user", "local-language"):
-                # Skip personal stations (My Wave is handled separately)
+                # Skip personal stations (My Mix is handled separately)
                 # and local-language stations (Kion returns overlapping tracks across them)
                 continue
             station_id = f"{category}:{tag}"
