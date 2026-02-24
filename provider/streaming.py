@@ -255,12 +255,12 @@ class KionMusicStreamingManager:
         return sorted_infos[0] if sorted_infos else None
 
     def _get_content_type(self, codec: str | None) -> tuple[ContentType, ContentType]:
-        """Determine container and codec type from Yandex API codec string.
+        """Determine container and codec type from Kion API codec string.
 
-        Yandex API returns codec strings like "flac-mp4" (FLAC in MP4 container),
+        Kion API returns codec strings like "flac-mp4" (FLAC in MP4 container),
         "aac-mp4" (AAC in MP4 container), or plain "flac", "mp3", "aac".
 
-        :param codec: Codec string from Yandex API.
+        :param codec: Codec string from Kion API.
         :return: Tuple of (content_type/container, codec_type).
         """
         if not codec:
@@ -287,11 +287,11 @@ class KionMusicStreamingManager:
     def _get_audio_params(self, codec: str | None) -> tuple[int, int]:
         """Return (sample_rate, bit_depth) defaults based on codec string.
 
-        The Yandex get-file-info API does not return sample rate or bit depth,
+        The Kion get-file-info API does not return sample rate or bit depth,
         so we use codec-based defaults. These values help the core select the
         correct PCM output format and avoid unnecessary resampling.
 
-        :param codec: Codec string from Yandex API (e.g. "flac-mp4", "flac", "mp3").
+        :param codec: Codec string from Kion API (e.g. "flac-mp4", "flac", "mp3").
         :return: Tuple of (sample_rate, bit_depth).
         """
         if codec and codec.lower() == "flac-mp4":
@@ -302,7 +302,7 @@ class KionMusicStreamingManager:
     def _build_audio_format(self, codec: str | None, bit_rate: int = 0) -> AudioFormat:
         """Build AudioFormat with content type and codec-based audio params.
 
-        :param codec: Codec string from Yandex API (e.g. "flac-mp4", "flac", "mp3").
+        :param codec: Codec string from Kion API (e.g. "flac-mp4", "flac", "mp3").
         :param bit_rate: Bitrate in kbps (0 for variable/unknown).
         :return: Configured AudioFormat instance.
         """
