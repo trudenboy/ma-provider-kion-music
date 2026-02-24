@@ -17,7 +17,7 @@ from .constants import (
     CONF_QUALITY,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
-    QUALITY_SUPERB,
+    QUALITY_LOSSLESS,
     RADIO_TRACK_ID_SEP,
 )
 
@@ -63,7 +63,7 @@ class KionMusicStreamingManager:
         preferred_normalized = (quality_str or "").strip().lower()
 
         # Check for superb (lossless) quality
-        want_lossless = preferred_normalized in (QUALITY_SUPERB, "superb")
+        want_lossless = preferred_normalized in (QUALITY_LOSSLESS, "superb")
 
         # Backward compatibility: also check old "lossless" value (exact match)
         if preferred_normalized == "lossless":
@@ -183,7 +183,7 @@ class KionMusicStreamingManager:
         )
 
         # Superb: Prefer FLAC (backward compatibility with "lossless")
-        if preferred_normalized == QUALITY_SUPERB or "lossless" in preferred_normalized:
+        if preferred_normalized == QUALITY_LOSSLESS or "lossless" in preferred_normalized:
             # Note: flac-mp4 typically comes from get-file-info API, not download-info,
             # but we check here for forward compatibility in case the API changes.
             for codec in ("flac-mp4", "flac"):
