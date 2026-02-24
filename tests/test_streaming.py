@@ -39,7 +39,7 @@ def streaming_manager(
     streaming_provider_stub: StreamingProviderStub,
 ) -> KionMusicStreamingManager:
     """Create streaming manager with real stub (no Mock)."""
-    return KionMusicStreamingManager(streaming_provider_stub)  # type: ignore[arg-type]
+    return KionMusicStreamingManager(streaming_provider_stub)
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ def streaming_manager_with_tracking(
     streaming_provider_stub_with_tracking: StreamingProviderStubWithTracking,
 ) -> KionMusicStreamingManager:
     """Create streaming manager with tracking logger for assertions."""
-    return KionMusicStreamingManager(streaming_provider_stub_with_tracking)  # type: ignore[arg-type]
+    return KionMusicStreamingManager(streaming_provider_stub_with_tracking)
 
 
 def test_select_best_quality_lossless_returns_flac(
