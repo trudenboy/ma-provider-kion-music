@@ -2,6 +2,8 @@
 
 [English](README.en.md) | Русский
 
+📖 <a href="https://trudenboy.github.io/ma-provider-kion-music/">Документация пользователя</a>
+
 > Слушайте свою библиотеку [KION Музыки](https://music.kion.ru/) через [Music Assistant](https://music-assistant.io/) с поддержкой навигации, поиска, радио и воспроизведения без потерь.
 
 ## Быстрый старт (Docker)
