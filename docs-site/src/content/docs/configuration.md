@@ -6,11 +6,13 @@ title: Настройка
 
 Провайдер использует **X-Auth-Token** для авторизации в KION Music.
 
-### Из мобильного приложения
+### Через браузер
 
-1. Установите [KION](https://kion.ru) на Android/iOS
-2. Войдите в аккаунт
-3. Используйте [mitm-proxy](https://mitmproxy.org/) или аналогичный инструмент для перехвата заголовка `X-Auth-Token` из запросов к `api.music.kion.ru`
+1. Откройте [music.mts.ru](https://music.mts.ru) в браузере и войдите в аккаунт
+2. Откройте **Инструменты разработчика** (Ctrl+Shift+I / Cmd+Option+I)
+3. Перейдите на вкладку **Хранилище** (Firefox) или **Application** (Chrome)
+4. В разделе **Local Storage** выберите `https://music.mts.ru`
+5. Найдите ключ `ya_token` и скопируйте его значение
 
 ---
 
