@@ -5,42 +5,38 @@ description: Документация провайдера KION Music для Mus
 
 <img src="https://raw.githubusercontent.com/trudenboy/ma-provider-kion-music/dev/provider/icon.svg" alt="KION Music" style="width: 72px; float: right; margin: 0 0 1rem 1.5rem;" />
 
-[Music Assistant](https://music-assistant.io) поддерживает [KION/МТС Music](https://music.kion.ru) — музыкальный стриминговый сервис.
 
+Music Assistant поддерживает [KION Music](https://kion.ru) — музыкальный стриминговый сервис.
 Провайдер создан и поддерживается [TrudenBoy](https://github.com/TrudenBoy).
 
-Реализован на основе библиотеки [kion-music-api](https://github.com/MarshalX/yandex-music-api) (**неофициальный** клиент API через прокси KION Music).
 
-:::caution[Неофициальный провайдер]
-Этот провайдер использует **неофициальный** клиент KION Music API и не аффилирован с МТС или KION. API может измениться без предупреждения, что может привести к временной неработоспособности провайдера.
-:::
-
-:::note[Подписка]
-Для полноценной работы всех функций, а также проигрывания Lossless FLAC необходимо наличие подписки [KION Music](https://music.kion.ru). Без подписки полноценная работа провайдера не гарантируется.
-:::
 
 ## Возможности
+
 
 | Функция | Поддержка |
 |:--------|:---------:|
 | Исполнители, Альбомы, Треки, Плейлисты | ✅ |
 | Поиск по каталогу | ✅ |
-| Синхронизация библиотеки (двунаправленная) | ✅ |
-| [Рекомендации на главном экране](features/recommendations/) | ✅ |
-| [Мой микс / Radio Mode](features/my-mix/) | ✅ |
-| [Радиостанции / Rotor](features/radio/) | ✅ |
-| [Похожие треки](features/similar-tracks/) | ✅ |
-| [Тексты песен](features/lyrics/) | ✅ |
-| [Подборки и миксы](features/picks-and-mixes/) | ✅ |
-| [Просмотр каталога (Browse)](features/browse/) | ✅ |
-| [Качество звука до Lossless FLAC](features/audio-quality/) | ✅ |
-| Несколько аккаунтов одновременно | ✅ |
+| Синхронизация библиотеки | ✅ |
+| Рекомендации | ✅ |
+| Тексты песен | ✅ |
+| Просмотр каталога (Browse) | ✅ |
+| Максимальное качество | Lossless FLAC (с подпиской) |
+| Способ входа | Токен (X-Auth-Token) |
 
-| Параметр | Значение |
-|:---------|:---------|
-| Максимальное качество | Lossless FLAC (с подпиской KION) |
-| Способ входа | X-Auth-Token |
+
+
+## Настройка
+
 
 Инструкция по подключению — на странице [Настройка](configuration/).
 
-Полный список проблем — на странице [Известные проблемы](known-issues/).
+
+
+## Известные проблемы
+
+
+Полный список — на странице [Известные проблемы](known-issues/).
+
+
