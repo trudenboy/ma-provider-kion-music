@@ -144,4 +144,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.6.7] - 2026-02-27
+
+## What's Changed
+* chore: sync workflow wrappers from ma-provider-tools by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/60
+* feat(kion_music): sync branding from yandex_music v2.6.7 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/61
+
+
+**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.6.5...v2.6.7
+
+---
+
 <!-- changelog entries will be added here by release workflow -->
