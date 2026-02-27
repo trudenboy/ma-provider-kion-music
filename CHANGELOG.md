@@ -5,43 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 2026-02-22
+<!-- changelog entries will be added here by release workflow -->
 
-- chore: set Russian README as default (#35) (`0a58cc4`)
-- docs: rewrite README.ru in MSX style with Docker Quick Start, full features, references (`b089ae0`)
-- docs: rewrite README in MSX style with Docker Quick Start, full features, references (`21ab140`)
+## [2.6.7] - 2026-02-27
 
-## 2026-02-21
-
-- fix: ensure docs files end with exactly one trailing newline (#23) (`5f62bc9`)
-- Remove music-assistant-models dependency (`8fb7cb6`)
-- docs: unify documentation structure (#9) (`3e5a49e`)
-
-## 2026-02-19
-
-- feat: initial provider setup (`cdd1fbc`)
+## What's Changed
+* chore: sync workflow wrappers from ma-provider-tools by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/60
+* feat(kion_music): sync branding from yandex_music v2.6.7 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/61
 
 
-<!-- Pre-separation: development in trudenboy/ma-server monorepo -->
-<!-- The following changes were developed in the `trudenboy/ma-server` monorepo before this provider was extracted into its own repository on 2026-02-19. -->
+**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.6.5...v2.6.7
 
-## 2026-02-17
+---
 
-- feat: add configurable My Mix settings and improvements (music-assistant/server#3145)
+---
 
-## 2026-02-10
+## [2.6.5] - 2026-02-26
 
-- feat: provider accepted into upstream Music Assistant (music-assistant/server#3100)
+## What's Changed
+* feat(kion_music): sync branding from yandex_music v2.6.5 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/58
 
-## 2026-02-07
 
-- fix: address PR review — fix base_url, performance, redundant condition, docstrings; add tests
+**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.6.4...v2.6.5
 
-## 2026-02-05
+---
 
-- feat: add KION Music (MTS Music) provider
-- fix: fix playlist tracks not loading in UI
-- fix: fix missing album cover art in library
+## [2.6.4] - 2026-02-26
+
+## What's Changed
+* feat(kion_music): sync branding from yandex_music v2.6.3 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/53
+* feat(kion_music): sync branding from yandex_music v2.6.3 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/54
+* feat(kion_music): sync branding from yandex_music v2.6.3 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/55
+* chore: sync workflow wrappers from ma-provider-tools by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/56
+* feat(kion_music): sync branding from yandex_music v2.6.4 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/57
+
+
+**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.6.2...v2.6.4
+
+---
+
+## [2.6.2] - 2026-02-24
+
+## What's Changed
+* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/52
+
+
+**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.6.1...v2.6.2
+
+---
+
+## [2.6.1] - 2026-02-24
+
+## What's Changed
+* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/48
+* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/49
+* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/50
+* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/51
+
+
+**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.5.8...v2.6.1
+
+---
 
 ## [2.5.8] - 2026-02-24
 
@@ -97,62 +121,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [2.6.1] - 2026-02-24
+## 2026-02-22
 
-## What's Changed
-* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/48
-* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/49
-* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/50
-* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/51
+- chore: set Russian README as default (#35) (`0a58cc4`)
+- docs: rewrite README.ru in MSX style with Docker Quick Start, full features, references (`b089ae0`)
+- docs: rewrite README in MSX style with Docker Quick Start, full features, references (`21ab140`)
 
+## 2026-02-21
 
-**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.5.8...v2.6.1
+- fix: ensure docs files end with exactly one trailing newline (#23) (`5f62bc9`)
+- Remove music-assistant-models dependency (`8fb7cb6`)
+- docs: unify documentation structure (#9) (`3e5a49e`)
 
----
+## 2026-02-19
 
-## [2.6.2] - 2026-02-24
-
-## What's Changed
-* feat(kion_music): sync branding from yandex_music v2.6.1 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/52
+- feat: initial provider setup (`cdd1fbc`)
 
 
-**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.6.1...v2.6.2
+<!-- Pre-separation: development in trudenboy/ma-server monorepo -->
+<!-- The following changes were developed in the `trudenboy/ma-server` monorepo before this provider was extracted into its own repository on 2026-02-19. -->
 
----
+## 2026-02-17
 
-## [2.6.4] - 2026-02-26
+- feat: add configurable My Mix settings and improvements (music-assistant/server#3145)
 
-## What's Changed
-* feat(kion_music): sync branding from yandex_music v2.6.3 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/53
-* feat(kion_music): sync branding from yandex_music v2.6.3 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/54
-* feat(kion_music): sync branding from yandex_music v2.6.3 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/55
-* chore: sync workflow wrappers from ma-provider-tools by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/56
-* feat(kion_music): sync branding from yandex_music v2.6.4 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/57
+## 2026-02-10
 
+- feat: provider accepted into upstream Music Assistant (music-assistant/server#3100)
 
-**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.6.2...v2.6.4
+## 2026-02-07
 
----
+- fix: address PR review — fix base_url, performance, redundant condition, docstrings; add tests
 
-## [2.6.5] - 2026-02-26
+## 2026-02-05
 
-## What's Changed
-* feat(kion_music): sync branding from yandex_music v2.6.5 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/58
-
-
-**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.6.4...v2.6.5
-
----
-
-## [2.6.7] - 2026-02-27
-
-## What's Changed
-* chore: sync workflow wrappers from ma-provider-tools by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/60
-* feat(kion_music): sync branding from yandex_music v2.6.7 by @trudenboy in https://github.com/trudenboy/ma-provider-kion-music/pull/61
-
-
-**Full Changelog**: https://github.com/trudenboy/ma-provider-kion-music/compare/v2.6.5...v2.6.7
-
----
-
-<!-- changelog entries will be added here by release workflow -->
+- feat: add KION Music (MTS Music) provider
+- fix: fix playlist tracks not loading in UI
+- fix: fix missing album cover art in library
