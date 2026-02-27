@@ -38,5 +38,3 @@ Music Assistant поддерживает [KION Music](https://kion.ru) — му�
 
 
 Полный список — на странице [Известные проблемы](known-issues/).
-
-

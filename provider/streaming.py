@@ -417,7 +417,7 @@ class KionMusicStreamingManager:
         if final:
             yield final
 
-    async def get_audio_stream(
+    async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item with on-the-fly decryption.
@@ -444,7 +444,10 @@ class KionMusicStreamingManager:
         encrypted_url: str = streamdetails.data["encrypted_url"]
         track_item_id: str = streamdetails.item_id
         key_hex: str = streamdetails.data["decryption_key"]
-        key_bytes = bytes.fromhex(key_hex)
+        try:
+            key_bytes = bytes.fromhex(key_hex)
+        except ValueError as err:
+            raise MediaNotFoundError(f"Invalid decryption key format: {err}") from err
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
 
