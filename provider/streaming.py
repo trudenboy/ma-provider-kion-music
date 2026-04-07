@@ -20,7 +20,7 @@ from .constants import (
     CONF_QUALITY,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
-    QUALITY_SUPERB,
+    QUALITY_LOSSLESS,
     RADIO_TRACK_ID_SEP,
 )
 
@@ -79,7 +79,7 @@ class KionMusicStreamingManager:
         preferred_normalized = (quality_str or "").strip().lower()
 
         # Check for superb (lossless) quality
-        want_lossless = preferred_normalized in (QUALITY_SUPERB, "superb")
+        want_lossless = preferred_normalized in (QUALITY_LOSSLESS, "superb")
 
         # Backward compatibility: also check old "lossless" value (exact match)
         if preferred_normalized == "lossless":
@@ -201,7 +201,7 @@ class KionMusicStreamingManager:
         )
 
         # Superb: Prefer FLAC (backward compatibility with "lossless")
-        if preferred_normalized in {QUALITY_SUPERB, "lossless"}:
+        if preferred_normalized == QUALITY_LOSSLESS or "lossless" in preferred_normalized:
             # Note: flac-mp4 typically comes from get-file-info API, not download-info,
             # but we check here for forward compatibility in case the API changes.
             for codec in ("flac-mp4", "flac"):
@@ -469,7 +469,7 @@ class KionMusicStreamingManager:
         except ValueError:
             return False
 
-    async def get_audio_stream(  # noqa: PLR0915
+    async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item with on-the-fly decryption.
@@ -496,10 +496,7 @@ class KionMusicStreamingManager:
         encrypted_url: str = streamdetails.data["encrypted_url"]
         track_item_id: str = streamdetails.item_id
         key_hex: str = streamdetails.data["decryption_key"]
-        try:
-            key_bytes = bytes.fromhex(key_hex)
-        except ValueError as exc:
-            raise MediaNotFoundError("Invalid decryption key format") from exc
+        key_bytes = bytes.fromhex(key_hex)
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
 
@@ -538,17 +535,10 @@ class KionMusicStreamingManager:
                                 "after retries exhausted"
                             )
                         encrypted_url, key_hex = refreshed
-                        try:
-                            key_bytes = bytes.fromhex(key_hex)
-                        except ValueError as err:
-                            raise MediaNotFoundError(
-                                "Invalid decryption key format after URL refresh"
-                            ) from err
+                        key_bytes = bytes.fromhex(key_hex)
                         retry_delay = 0.0
                         attempt += 1  # consume one retry slot, same as TCP-drop path
                         continue
-                    if response.status == 416:
-                        return  # Range Not Satisfiable — file size is exact window multiple
                     try:
                         response.raise_for_status()
                     except Exception as err:
