@@ -47,6 +47,7 @@ from .constants import (
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_TOKEN,
+    CONF_X_TOKEN,
     DEFAULT_BASE_URL,
     DISCOVERY_INITIAL_TRACKS,
     FOR_YOU_FOLDER_ID,
@@ -84,6 +85,7 @@ from .parsers import (
     parse_track,
 )
 from .streaming import KionMusicStreamingManager
+from .yandex_auth import refresh_music_token
 
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
@@ -157,14 +159,54 @@ class KionMusicProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         token = self.config.get_value(CONF_TOKEN)
-        if not token:
-            raise LoginFailed("No KION Music token provided")
-
+        x_token = self.config.get_value(CONF_X_TOKEN)
         base_url = self.config.get_value(CONF_BASE_URL, DEFAULT_BASE_URL)
-        self._client = KionMusicClient(str(token), base_url=str(base_url))
-        await self._client.connect()
+
+        if not token and not x_token:
+            raise LoginFailed("No KION Music token provided. Please authenticate.")
+
+        # Try existing music token first (fast path)
+        if token:
+            try:
+                self._client = KionMusicClient(str(token), base_url=str(base_url))
+                await self._client.connect()
+            except LoginFailed:
+                self.logger.warning("Music token is invalid or expired")
+                # Clear the dead token so restarts go straight to refresh
+                self._update_config_value(CONF_TOKEN, None, encrypted=True)
+                if x_token:
+                    self.logger.info("Attempting to refresh from session token")
+                    token = None
+                    self._client = None
+                else:
+                    raise
+
+        # Refresh from x_token if music token absent or failed
+        if not token and x_token:
+            try:
+                new_music_token = await refresh_music_token(str(x_token))
+                self._update_config_value(CONF_TOKEN, new_music_token, encrypted=True)
+                self._client = KionMusicClient(new_music_token, base_url=str(base_url))
+                await self._client.connect()
+                self.logger.info("Refreshed music token from session token")
+            except LoginFailed as err:
+                # Definitive auth failure — clear dead credentials
+                self.logger.warning("Session token is invalid or expired")
+                self._update_config_value(CONF_TOKEN, None, encrypted=True)
+                self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
+                raise LoginFailed("Session token expired. Please re-authenticate.") from err
+            except Exception as err:
+                # Transient/network failure — keep credentials for retry
+                self.logger.warning(
+                    "Session token refresh failed (network): %s",
+                    type(err).__name__,
+                )
+                raise ProviderUnavailableError(
+                    "Unable to refresh music token right now. Please try again later."
+                ) from err
+
         # Suppress kion_music library DEBUG dumps (full API request/response JSON)
-        logging.getLogger("yandex_music").setLevel(self.logger.level + 10)
+        logging.getLogger("kion_music").setLevel(self.logger.level + 10)
         self._streaming = KionMusicStreamingManager(self)
         # Initialize My Mix duplicate tracking
         self._my_wave_seen_track_ids = set()
@@ -203,15 +245,13 @@ class KionMusicProvider(MusicProvider):
         )
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with locale-based folder names.
+        """Browse provider items with locale-based folder names and My Mix.
 
-        Root level shows My Mix (personalised radio), For You (picks & mixes),
-        Collection (liked tracks/albums/artists/playlists), Radio (rotor stations
-        by genre/mood/activity/era/local) and AI Mix Sets. Names are in Russian
-        when MA locale is ru_*, otherwise in English. My Mix tracks use item_id
-        format track_id@station_id for rotor feedback.
+        Root level shows My Mix, artists, albums, liked tracks, playlists. Names
+        are in Russian when MA locale is ru_*, otherwise in English. My Mix
+        tracks use item_id format track_id@station_id for rotor feedback.
 
-        :param path: The path to browse (e.g. provider_id:// or provider_id://waves).
+        :param path: The path to browse (e.g. provider_id:// or provider_id://artists).
         """
         if ProviderFeature.BROWSE not in self.supported_features:
             raise NotImplementedError
@@ -860,7 +900,7 @@ class KionMusicProvider(MusicProvider):
         # waves/ — show category folders
         if len(path_parts) == 1:
             folders: list[BrowseFolder] = []
-            # Personalized "My Mixes" first — only show if dashboard returns stations
+            # Personalized "My Mixs" first — only show if dashboard returns stations
             dashboard_stations = await self._get_dashboard_stations_cached()
             if dashboard_stations:
                 folders.append(
@@ -868,7 +908,7 @@ class KionMusicProvider(MusicProvider):
                         item_id=MY_WAVES_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{MY_WAVES_FOLDER_ID}",
-                        name=names.get(MY_WAVES_FOLDER_ID, "My Mixes"),
+                        name=names.get(MY_WAVES_FOLDER_ID, "My Mixs"),
                         is_playable=False,
                     )
                 )

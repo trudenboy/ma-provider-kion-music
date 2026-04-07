@@ -85,7 +85,7 @@ class KionMusicClient:
             self._user_id = self._client.me.account.uid
             LOGGER.debug("Connected to KION Music as user %s", self._user_id)
             return True
-        except (UnauthorizedError, BadRequestError) as err:
+        except UnauthorizedError as err:
             raise LoginFailed("Invalid KION Music token") from err
         except NetworkError as err:
             msg = "Network error connecting to KION Music"
@@ -513,7 +513,7 @@ class KionMusicClient:
 
             # Check if it's LRC format (synced lyrics have timestamps like [00:12.34])
             # Use re.search without ^ so metadata lines like [ar:Artist] don't prevent detection
-            is_synced = bool(re.search(r"\[\d{1,2}:\d{1,2}(?:\.\d{2,3})?\]", lyrics_text))
+            is_synced = bool(re.search(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", lyrics_text))
             return lyrics_text, is_synced
 
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
@@ -719,7 +719,7 @@ class KionMusicClient:
             # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
             # Kion API expects exactly 43 chars (one "=" removed).
             # Matches kion-music-downloader-realflac reference implementation.
-            params["sign"] = base64.b64encode(hmac_sign.digest()).decode().rstrip("=")
+            params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
             url = f"{client.base_url}/get-file-info"
             return url, params
 
@@ -772,10 +772,10 @@ class KionMusicClient:
             )
         except Exception as err:
             LOGGER.warning(
-                "get-file-info lossless for track %s: Unexpected error: %s",
+                "get-file-info lossless for track %s: Unexpected %s: %s",
                 track_id,
+                type(err).__name__,
                 err,
-                exc_info=True,
             )
 
         return None
