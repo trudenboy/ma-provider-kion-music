@@ -85,7 +85,7 @@ class KionMusicClient:
             self._user_id = self._client.me.account.uid
             LOGGER.debug("Connected to KION Music as user %s", self._user_id)
             return True
-        except (UnauthorizedError, BadRequestError) as err:
+        except UnauthorizedError as err:
             raise LoginFailed("Invalid KION Music token") from err
         except NetworkError as err:
             msg = "Network error connecting to KION Music"
@@ -513,7 +513,7 @@ class KionMusicClient:
 
             # Check if it's LRC format (synced lyrics have timestamps like [00:12.34])
             # Use re.search without ^ so metadata lines like [ar:Artist] don't prevent detection
-            is_synced = bool(re.search(r"\[\d{1,2}:\d{1,2}(?:\.\d{2,3})?\]", lyrics_text))
+            is_synced = bool(re.search(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", lyrics_text))
             return lyrics_text, is_synced
 
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
@@ -678,18 +678,31 @@ class KionMusicClient:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
 
-    async def get_track_file_info_lossless(self, track_id: str) -> dict[str, Any] | None:
-        """Request lossless stream via get-file-info (quality=lossless).
+    async def get_track_file_info(
+        self,
+        track_id: str,
+        quality: str = "lossless",
+        codecs: str = GET_FILE_INFO_CODECS,
+        transport: str = "raw",
+    ) -> dict[str, Any] | None:
+        """Request stream via get-file-info for any quality tier.
 
-        The /tracks/{id}/download-info endpoint often returns only MP3; get-file-info
-        with quality=lossless and codecs=flac,... returns FLAC when available.
+        The /get-file-info endpoint supports all quality tiers (lossless, nq, lq)
+        and returns the best available codec based on the codecs parameter order.
 
-        Uses manual sign calculation matching kion-music-downloader-realflac.
+        With transport="raw", returns a direct unencrypted URL.
+        With transport="encraw", returns an AES-CTR encrypted URL with decryption key.
+
         Uses _call_with_retry for automatic reconnection on transient failures.
 
         :param track_id: Track ID.
-        :return: Parsed downloadInfo dict (url, codec, urls, ...) or None on error.
+        :param quality: Quality tier ("lossless", "nq", "lq").
+        :param codecs: Comma-separated codec preference list.
+        :param transport: Transport mode ("raw" or "encraw").
+        :return: Parsed downloadInfo dict (url, codec, key?, ...) or None on error.
         """
+        # Normalize codecs: strip whitespace from each token to prevent HMAC mismatches
+        codecs = ",".join(c.strip() for c in codecs.split(",") if c.strip())
 
         def _build_signed_params(client: ClientAsync) -> tuple[str, dict[str, Any]]:
             """Build URL and signed params using current client and timestamp.
@@ -701,16 +714,13 @@ class KionMusicClient:
             params = {
                 "ts": timestamp,
                 "trackId": track_id,
-                "quality": "lossless",
-                "codecs": GET_FILE_INFO_CODECS,
-                "transports": "encraw",
+                "quality": quality,
+                "codecs": codecs,
+                "transports": transport,
             }
-            # Build sign string explicitly matching Kion API specification:
-            # concatenate ts + trackId + quality + codecs (commas stripped) + transports.
-            # Comma stripping matches kion-music-downloader-realflac reference implementation
-            # (see get_file_info signing in that project).
-            codecs_for_sign = GET_FILE_INFO_CODECS.replace(",", "")
-            param_string = f"{timestamp}{track_id}lossless{codecs_for_sign}encraw"
+            # Build sign string: ts + trackId + quality + codecs (commas stripped) + transports.
+            codecs_for_sign = codecs.replace(",", "")
+            param_string = f"{timestamp}{track_id}{quality}{codecs_for_sign}{transport}"
             hmac_sign = hmac.new(
                 DEFAULT_SIGN_KEY.encode(),
                 param_string.encode(),
@@ -718,8 +728,7 @@ class KionMusicClient:
             )
             # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
             # Kion API expects exactly 43 chars (one "=" removed).
-            # Matches kion-music-downloader-realflac reference implementation.
-            params["sign"] = base64.b64encode(hmac_sign.digest()).decode().rstrip("=")
+            params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
             url = f"{client.base_url}/get-file-info"
             return url, params
 
@@ -752,30 +761,31 @@ class KionMusicClient:
             parsed = _parse_file_info_result(result)
             if parsed:
                 LOGGER.debug(
-                    "get-file-info lossless for track %s: Success, codec=%s",
+                    "get-file-info for track %s: Success, codec=%s, transport=%s",
                     track_id,
                     parsed.get("codec"),
+                    transport,
                 )
                 return parsed
         except (BadRequestError, NetworkError) as err:
             LOGGER.debug(
-                "get-file-info lossless for track %s: %s %s",
+                "get-file-info for track %s: %s %s",
                 track_id,
                 type(err).__name__,
                 getattr(err, "message", str(err)) or repr(err),
             )
         except UnauthorizedError as err:
             LOGGER.debug(
-                "get-file-info lossless for track %s: UnauthorizedError %s",
+                "get-file-info for track %s: UnauthorizedError %s",
                 track_id,
                 getattr(err, "message", str(err)) or repr(err),
             )
         except Exception as err:
             LOGGER.warning(
-                "get-file-info lossless for track %s: Unexpected error: %s",
+                "get-file-info for track %s: Unexpected %s: %s",
                 track_id,
+                type(err).__name__,
                 err,
-                exc_info=True,
             )
 
         return None
