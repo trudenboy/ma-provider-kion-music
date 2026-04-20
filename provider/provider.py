@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Coroutine, Sequence
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
@@ -717,6 +717,11 @@ class KionMusicProvider(MusicProvider):
         Resolves each pin to its full media item via existing single-item lookups.
         Wave pins are skipped — MA has no native concept for them.
 
+        Pins are resolved concurrently via ``asyncio.gather`` so latency is
+        dominated by the slowest lookup rather than their sum. Individual
+        failures (``MediaNotFoundError`` / ``InvalidDataError``) are skipped
+        without aborting the batch.
+
         :return: List of resolved media items.
         """
         pins_list = await self.client.get_pins()
@@ -724,24 +729,38 @@ class KionMusicProvider(MusicProvider):
         if not pins:
             return []
 
-        items: list[MediaItemType] = []
+        tasks: list[Coroutine[Any, Any, MediaItemType]] = []
+        pin_descs: list[str] = []
         for pin in pins:
             pin_type = getattr(pin, "type", None)
             data = getattr(pin, "data", None)
             if data is None:
                 continue
-            try:
-                if pin_type == "artist_item" and getattr(data, "id", None) is not None:
-                    items.append(await self.get_artist(str(data.id)))
-                elif pin_type == "album_item" and getattr(data, "id", None) is not None:
-                    items.append(await self.get_album(str(data.id)))
-                elif pin_type == "playlist_item":
-                    uid = getattr(data, "uid", None)
-                    kind = getattr(data, "kind", None)
-                    if uid is not None and kind is not None:
-                        items.append(await self.get_playlist(f"{uid}:{kind}"))
-            except (MediaNotFoundError, InvalidDataError) as err:
-                self.logger.debug("Skipping pin %s: %s", pin_type, err)
+            if pin_type == "artist_item" and getattr(data, "id", None) is not None:
+                tasks.append(self.get_artist(str(data.id)))
+                pin_descs.append(f"artist:{data.id}")
+            elif pin_type == "album_item" and getattr(data, "id", None) is not None:
+                tasks.append(self.get_album(str(data.id)))
+                pin_descs.append(f"album:{data.id}")
+            elif pin_type == "playlist_item":
+                uid = getattr(data, "uid", None)
+                kind = getattr(data, "kind", None)
+                if uid is not None and kind is not None:
+                    tasks.append(self.get_playlist(f"{uid}:{kind}"))
+                    pin_descs.append(f"playlist:{uid}:{kind}")
+
+        if not tasks:
+            return []
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        items: list[MediaItemType] = []
+        for desc, result in zip(pin_descs, results, strict=True):
+            if isinstance(result, (MediaNotFoundError, InvalidDataError)):
+                self.logger.debug("Skipping pin %s: %s", desc, result)
+            elif isinstance(result, BaseException):
+                raise result
+            else:
+                items.append(result)
         return items
 
     async def _browse_history(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:

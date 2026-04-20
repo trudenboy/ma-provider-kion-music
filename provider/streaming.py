@@ -708,12 +708,23 @@ class KionMusicStreamingManager:
     ) -> int:
         """Calculate initial byte offset for raw transport seeking.
 
+        Byte-offset seeking is only safe for codecs where byte position and
+        time position are linearly related — i.e. raw MP3. MP4-container
+        formats (aac-mp4, flac-mp4) need the ftyp/moov init atoms at the
+        file start and raw FLAC frames are variable-size, so byte-offset
+        seeks there land in the middle of undecodable data. For those, we
+        return 0 and let ffmpeg handle time-based seeking via ``-ss``
+        (``allow_seek=True`` is set on the StreamDetails for that purpose).
+
         :param data: Stream data dict (must contain 'bit_rate' in kbps).
         :param seek_position: Seek offset in seconds.
         :param is_encrypted: Whether the stream uses AES encryption.
         :return: Byte offset to start streaming from (0 if not applicable).
         """
         if seek_position <= 0 or is_encrypted:
+            return 0
+        codec = str(data.get("codec") or "").lower()
+        if codec not in ("mp3", "mpeg"):
             return 0
         bit_rate = data.get("bit_rate") or 0
         if not bit_rate:
@@ -727,7 +738,7 @@ class KionMusicStreamingManager:
         )
         return byte_offset
 
-    async def get_audio_stream(
+    async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream via windowed Range requests.
@@ -784,6 +795,10 @@ class KionMusicStreamingManager:
                         attempt += 1
                         retry_delay = 0.0
                         continue
+                    if response.status == 416:
+                        # Range Not Satisfiable — last complete window aligned with EOF,
+                        # so our next request asked past the end. Treat as EOF.
+                        return
                     try:
                         response.raise_for_status()
                     except Exception as err:
