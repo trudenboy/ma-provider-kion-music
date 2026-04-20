@@ -662,10 +662,16 @@ class KionMusicStreamingManager:
         bytes_yielded: int,
         attempt: int,
         max_retries: int,
-    ) -> bytes | None:
+    ) -> bytes:
         """Handle URL expiry (401/403/410) by refreshing and returning updated key.
 
-        :return: Updated AES key bytes (or empty bytes for raw), None if exhausted.
+        On success returns the refreshed AES key bytes for encrypted streams,
+        or empty bytes for raw transport (caller ignores the return in that
+        case). Retry exhaustion raises ``MediaNotFoundError`` instead of
+        returning ``None``, so the function is guaranteed to produce a
+        ``bytes`` value when it returns.
+
+        :return: Updated AES key bytes (or empty bytes for raw transport).
         :raises MediaNotFoundError: When refresh fails after retries exhausted.
         """
         if not await self._refresh_stream_url(

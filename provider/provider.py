@@ -60,6 +60,7 @@ from .constants import (
     MY_WAVES_SET_FOLDER_ID,
     PINNED_ITEMS_FOLDER_ID,
     PLAYLIST_ID_SPLITTER,
+    QUALITY_LOSSLESS,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_MIX,
@@ -2463,8 +2464,18 @@ class KionMusicProvider(MusicProvider):
         return await self.client.get_rotor_station_tracks(station_id, queue=queue)
 
     def get_quality(self) -> str:
-        """Return the configured audio quality tier (e.g. 'balanced', 'superb')."""
-        return str(self.config.get_value(CONF_QUALITY) or "").strip().lower()
+        """Return the configured audio quality tier (e.g. 'balanced', 'superb').
+
+        Mirrors the legacy-value normalization used by the streaming layer:
+        older configs store the lossless tier as ``"lossless"``, while the
+        current canonical value is ``QUALITY_LOSSLESS`` (``"superb"``).
+        External callers (e.g. the ynison plugin wrapper) see the same
+        normalized value the streaming code would resolve to.
+        """
+        quality = str(self.config.get_value(CONF_QUALITY) or "").strip().lower()
+        if quality == "lossless":
+            quality = QUALITY_LOSSLESS
+        return quality
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve wave cover image with background color fill for transparent PNGs.
