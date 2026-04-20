@@ -12,7 +12,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY_SUPERB
+from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY_LOSSLESS
 from music_assistant.providers.kion_music.streaming import KionMusicStreamingManager
 
 if TYPE_CHECKING:
@@ -66,7 +66,7 @@ def test_select_best_quality_lossless_returns_flac(
     flac = _make_download_info("flac", 0, "https://example.com/track.flac")
     download_infos = [mp3, flac]
 
-    result = streaming_manager._select_best_quality(download_infos, QUALITY_SUPERB)
+    result = streaming_manager._select_best_quality(download_infos, QUALITY_LOSSLESS)
 
     assert result is not None
     assert result.codec == "flac"
@@ -92,7 +92,7 @@ def test_select_best_quality_empty_list_returns_none(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
     """Empty download_infos returns None."""
-    result = streaming_manager._select_best_quality([], QUALITY_SUPERB)
+    result = streaming_manager._select_best_quality([], QUALITY_LOSSLESS)
     assert result is None
 
 
@@ -114,24 +114,32 @@ def test_select_best_quality_none_preferred_returns_highest_bitrate(
 def test_get_content_type_flac_mp4_returns_flac(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
-    """flac-mp4 codec from get-file-info is mapped to MP4 container and FLAC codec."""
+    """flac-mp4 codec maps content_type to FLAC (audio) with codec_type FLAC for MP4 container."""
     content_type = streaming_manager._get_content_type("flac-mp4")
-    assert content_type[0] == ContentType.MP4
+    assert content_type[0] == ContentType.FLAC
     assert content_type[1] == ContentType.FLAC
     content_type_upper = streaming_manager._get_content_type("FLAC-MP4")
-    assert content_type_upper[0] == ContentType.MP4
+    assert content_type_upper[0] == ContentType.FLAC
     assert content_type_upper[1] == ContentType.FLAC
 
 
 def _make_stream_details(
-    decryption_key: str, encrypted_url: str = "https://example.com/enc.flac"
+    decryption_key: str, url: str = "https://example.com/enc.flac"
 ) -> StreamDetails:
     """Build a minimal StreamDetails for get_audio_stream tests."""
     return StreamDetails(
         provider="kion_music_instance",
         item_id="test_track",
         audio_format=AudioFormat(content_type=ContentType.FLAC),
-        data={"encrypted_url": encrypted_url, "decryption_key": decryption_key},
+        data={
+            "url": url,
+            "codec": "flac",
+            "transport": "encraw",
+            "bit_rate": 0,
+            "fi_quality": "lossless",
+            "fi_codecs": "flac-mp4,flac",
+            "decryption_key": decryption_key,
+        },
     )
 
 
