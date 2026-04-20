@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Bump version from 2.6.7 to 3.0.0 (`5ecbed1`)
 - feat: port functional improvements from PR #87 (keep manual-token auth) (#89) (`91f345f`)
+  - Encrypted streaming via `/get-file-info` with HMAC-SHA256 signing + AES-CTR decryption
+  - New `SIMILAR_ARTISTS` provider feature
+  - Expanded `parse_artist` with description/popularity metadata
+  - Browse additions: pinned items, listening history, wave landing/my-waves
+  - Renamed `QUALITY_SUPERB` → `QUALITY_LOSSLESS` (legacy `"lossless"` still accepted)
+  - Advanced settings: `CONF_TRANSPORT` (raw/encraw), `CONF_CODECS`
+  - Typed v3 rotor feedback dispatch (radioStarted/trackStarted/trackFinished/skip)
 - refactor: rename cosmetic Yandex references to Kion (`6ebc874`)
 - feat: migrate to yandex-music v3 (`54f1119`)
 - chore: sync workflow wrappers from ma-provider-tools (#86) (`f79a6a9`)
