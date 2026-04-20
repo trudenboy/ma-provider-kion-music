@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-04-20
+
+- Bump version from 2.6.7 to 3.0.0 (`5ecbed1`)
+- feat: port functional improvements from PR #87 (keep manual-token auth) (#89) (`91f345f`)
+- refactor: rename cosmetic Yandex references to Kion (`6ebc874`)
+- feat: migrate to yandex-music v3 (`54f1119`)
+- chore: sync workflow wrappers from ma-provider-tools (#86) (`f79a6a9`)
+- chore: sync workflow wrappers from ma-provider-tools (#84) (`d983524`)
+- chore: sync workflow wrappers from ma-provider-tools (#83) (`c74b7af`)
+- chore: sync workflow wrappers from ma-provider-tools (#79) (`a17276c`)
+- chore: sync workflow wrappers from ma-provider-tools (#76) (`740b812`)
+- chore: add VERSION file (2.6.7) (`4ce884a`)
+- chore: sync workflow wrappers from ma-provider-tools (#74) (`bbf078d`)
+- chore: sync workflow wrappers from ma-provider-tools (#68) (`1023c16`)
+- fix: catch BadRequestError in connect() for rejected tokens (`d36b51c`)
+- fix: remove extra trailing newlines in docs-site content files (`b743be3`)
+- fix: update playlist snapshots with is_dynamic field (`c5febd6`)
+- fix: rename QUALITY_LOSSLESS to QUALITY_SUPERB for consistency (`0a9b89f`)
+- chore: sync workflow wrappers from ma-provider-tools (#67) (`b873620`)
+- fix: relax LRC timestamp regex to allow 1-2 digit minutes/seconds (`1db7a9f`)
+- fix: address PR #3234 second wave of review comments (#65) (`bb99d0a`)
+- fix: address PR #3234 second wave of review comments (`55ae177`)
+- fix: address PR #3234 review comments (#64) (`67af90f`)
+- fix: remove extra trailing newlines in docs-site content files (`12c33cf`)
+- test: remove test_get_audio_stream_invalid_key_hex_raises_error (`d7e76ee`)
+- feat(kion_music): sync branding from yandex_music v2.6.7 (#63) (`06d703e`)
+- chore: sync workflow wrappers from ma-provider-tools (#62) (`6f15ab4`)
+- chore: reformat CHANGELOG — use commit history instead of PR notes [skip ci] (`86afa5e`)
+- chore: reformat CHANGELOG — marker to top, releases newest-first [skip ci] (`17ec51f`)
+- chore: reformat CHANGELOG — marker to top, releases newest-first [skip ci] (`f7147e7`)
+- fix: use asyncio.TimeoutError instead of built-in TimeoutError in get_audio_stream (`d797269`)
+- fix: cast streaming stubs to KionMusicProvider to satisfy mypy (`9d6072b`)
+- chore: update manifest to match yandex_music format (`5fd5e2a`)
+- chore: update changelog for v2.6.7 [skip ci] (`fe06348`)
+
+---
+
 <!-- changelog entries will be added here by release workflow -->
 
 ## [2.6.7] - 2026-02-27
