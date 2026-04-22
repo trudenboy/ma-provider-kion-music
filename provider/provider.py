@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from collections.abc import AsyncGenerator, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
+from music_assistant_models.enums import ImageType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -21,23 +21,30 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItemChapter,
     MediaItemImage,
     MediaItemType,
     Playlist,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     RecommendationFolder,
     SearchResults,
     Track,
     UniqueList,
 )
+from music_assistant_models.streamdetails import StreamDetails
 from PIL import Image as PilImage
+from ya_passport_auth import SecretStr
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import KionMusicClient
+from .auth import refresh_credentials_via_passport, refresh_music_token
 from .constants import (
     BROWSE_INITIAL_TRACKS,
     BROWSE_NAMES_EN,
@@ -47,7 +54,9 @@ from .constants import (
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
+    CONF_REFRESH_TOKEN,
     CONF_TOKEN,
+    CONF_X_TOKEN,
     DEFAULT_BASE_URL,
     DISCOVERY_INITIAL_TRACKS,
     FOR_YOU_FOLDER_ID,
@@ -60,6 +69,7 @@ from .constants import (
     MY_WAVES_SET_FOLDER_ID,
     PINNED_ITEMS_FOLDER_ID,
     PLAYLIST_ID_SPLITTER,
+    QUALITY_BALANCED,
     QUALITY_LOSSLESS,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
@@ -81,16 +91,20 @@ from .parsers import (
     _get_image_url as get_image_url,
 )
 from .parsers import (
+    classify_album,
     get_canonical_provider_name,
     parse_album,
     parse_artist,
+    parse_audiobook,
     parse_playlist,
+    parse_podcast,
+    parse_podcast_episode,
     parse_track,
 )
 from .streaming import KionMusicStreamingManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.streamdetails import StreamDetails
+    from yandex_music import Album as YandexAlbum
 
 
 def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
@@ -132,6 +146,10 @@ class KionMusicProvider(MusicProvider):
     _my_wave_lock: asyncio.Lock  # Protects My Mix mutable state
     _wave_states: dict[str, _WaveState]  # Per-station state for tagged wave stations
     _wave_bg_colors: dict[str, str]  # image_url -> hex bg color for transparent covers
+    # Short-lived cache to dedupe the three library syncs (albums/podcasts/audiobooks)
+    # that all derive from the same liked-albums endpoint.
+    _liked_albums_cache: tuple[float, list[YandexAlbum]] | None = None
+    _liked_albums_lock: asyncio.Lock
 
     @property
     def client(self) -> KionMusicClient:
@@ -158,17 +176,116 @@ class KionMusicProvider(MusicProvider):
             use_russian = False
         return BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
 
+    async def _reauth_via_refresh_token(
+        self, x_token: str, refresh_token: str, base_url: str, original_err: Exception
+    ) -> None:
+        """Silently re-issue full credentials when x_token refresh fails.
+
+        Device-flow accounts have a refresh_token that can mint a new
+        x_token + refresh_token + music_token without any user interaction.
+        Persists the rotated triple and connects the client. Any failure
+        here is terminal — clears all credentials and forces re-auth.
+        """
+        try:
+            new_creds = await refresh_credentials_via_passport(
+                SecretStr(x_token), SecretStr(refresh_token)
+            )
+        except ResourceTemporarilyUnavailable as err2:
+            # Transient Passport failure — keep creds, let MA retry later
+            self.logger.warning(
+                "Credential refresh temporarily unavailable: %s", type(err2).__name__
+            )
+            raise ProviderUnavailableError(
+                "Unable to refresh credentials right now. Please try again later."
+            ) from err2
+        except LoginFailed as err2:
+            self.logger.warning("Session and refresh tokens are both expired")
+            self._update_config_value(CONF_TOKEN, None, encrypted=True)
+            self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
+            self._update_config_value(CONF_REFRESH_TOKEN, None, encrypted=True)
+            raise LoginFailed("Session expired. Please re-authenticate.") from err2
+
+        new_music_token = new_creds.music_token
+        new_refresh_token = new_creds.refresh_token
+        if new_music_token is None or new_refresh_token is None:
+            self._update_config_value(CONF_TOKEN, None, encrypted=True)
+            self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
+            self._update_config_value(CONF_REFRESH_TOKEN, None, encrypted=True)
+            raise LoginFailed(
+                "Credential refresh returned an incomplete response."
+            ) from original_err
+
+        self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
+        self._update_config_value(CONF_X_TOKEN, new_creds.x_token.get_secret(), encrypted=True)
+        self._update_config_value(
+            CONF_REFRESH_TOKEN, new_refresh_token.get_secret(), encrypted=True
+        )
+        self._client = KionMusicClient(new_music_token, base_url=base_url)
+        await self._client.connect()
+        self.logger.info("Re-issued credentials silently from refresh token")
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         token = self.config.get_value(CONF_TOKEN)
-        if not token:
-            raise LoginFailed("No KION Music token provided")
-
+        x_token = self.config.get_value(CONF_X_TOKEN)
+        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
         base_url = self.config.get_value(CONF_BASE_URL, DEFAULT_BASE_URL)
-        self._client = KionMusicClient(str(token), base_url=str(base_url))
-        await self._client.connect()
+
+        if not token and not x_token:
+            raise LoginFailed("No KION Music token provided. Please authenticate.")
+
+        # Try existing music token first (fast path)
+        if token:
+            try:
+                self._client = KionMusicClient(SecretStr(str(token)), base_url=str(base_url))
+                await self._client.connect()
+            except LoginFailed:
+                self.logger.warning("Music token is invalid or expired")
+                # Clear the dead token so restarts go straight to refresh
+                self._update_config_value(CONF_TOKEN, None, encrypted=True)
+                if x_token:
+                    self.logger.info("Attempting to refresh from session token")
+                    token = None
+                    self._client = None
+                else:
+                    raise
+
+        # Refresh from x_token if music token absent or failed
+        if not token and x_token:
+            try:
+                new_music_token = await refresh_music_token(SecretStr(str(x_token)))
+                self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
+                self._client = KionMusicClient(new_music_token, base_url=str(base_url))
+                await self._client.connect()
+                self.logger.info("Refreshed music token from session token")
+            except LoginFailed as err:
+                # x_token refresh failed. If a refresh_token is available
+                # (device-flow accounts), try silent re-issue of the full
+                # credential triple before giving up.
+                if refresh_token:
+                    await self._reauth_via_refresh_token(
+                        str(x_token), str(refresh_token), str(base_url), err
+                    )
+                else:
+                    # Definitive auth failure — clear dead credentials
+                    self.logger.warning("Session token is invalid or expired")
+                    self._update_config_value(CONF_TOKEN, None, encrypted=True)
+                    self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
+                    raise LoginFailed("Session token expired. Please re-authenticate.") from err
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                # Transient/network failure — keep credentials for retry
+                self.logger.warning(
+                    "Session token refresh failed (network): %s",
+                    type(err).__name__,
+                )
+                raise ProviderUnavailableError(
+                    "Unable to refresh music token right now. Please try again later."
+                ) from err
+
         # Suppress kion_music library DEBUG dumps (full API request/response JSON)
-        logging.getLogger("yandex_music").setLevel(self.logger.level + 10)
+        logging.getLogger("kion_music").setLevel(self.logger.level + 10)
         self._streaming = KionMusicStreamingManager(self)
         # Initialize My Mix duplicate tracking
         self._my_wave_seen_track_ids = set()
@@ -176,6 +293,8 @@ class KionMusicProvider(MusicProvider):
         # Initialize per-station wave state dict
         self._wave_states = {}
         self._wave_bg_colors = {}
+        self._liked_albums_lock = asyncio.Lock()
+        self._liked_albums_cache = None
         self.logger.info("Successfully connected to KION Music")
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -207,15 +326,13 @@ class KionMusicProvider(MusicProvider):
         )
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with locale-based folder names.
+        """Browse provider items with locale-based folder names and My Mix.
 
-        Root level shows My Mix (personalised radio), For You (picks & mixes),
-        Collection (liked tracks/albums/artists/playlists), Radio (rotor stations
-        by genre/mood/activity/era/local) and AI Mix Sets. Names are in Russian
-        when MA locale is ru_*, otherwise in English. My Mix tracks use item_id
-        format track_id@station_id for rotor feedback.
+        Root level shows My Mix, artists, albums, liked tracks, playlists. Names
+        are in Russian when MA locale is ru_*, otherwise in English. My Mix
+        tracks use item_id format track_id@station_id for rotor feedback.
 
-        :param path: The path to browse (e.g. provider_id:// or provider_id://waves).
+        :param path: The path to browse (e.g. provider_id:// or provider_id://artists).
         """
         if ProviderFeature.BROWSE not in self.supported_features:
             raise NotImplementedError
@@ -252,10 +369,6 @@ class KionMusicProvider(MusicProvider):
         if subpath == MY_WAVES_SET_FOLDER_ID:
             return await self._browse_vibe_sets(path, path_parts)
 
-        # Handle waves_landing/ path (Featured Mixes from /landing-blocks/waves)
-        if subpath == WAVES_LANDING_FOLDER_ID:
-            return await self._browse_waves_landing(path, path_parts)
-
         # Pinned items folder
         if subpath == PINNED_ITEMS_FOLDER_ID:
             return await self._browse_pins()
@@ -263,6 +376,10 @@ class KionMusicProvider(MusicProvider):
         # Listening history folder
         if subpath == LISTENING_HISTORY_FOLDER_ID:
             return await self._browse_history()
+
+        # Handle waves_landing/ path (Featured Mixes from /landing-blocks/waves)
+        if subpath == WAVES_LANDING_FOLDER_ID:
+            return await self._browse_waves_landing(path, path_parts)
 
         # Handle direct tag subpath (when folder is played by URI, the full path
         # "picks/category/tag" is lost and only the tag slug arrives as subpath).
@@ -432,11 +549,11 @@ class KionMusicProvider(MusicProvider):
             if total_track_count >= effective_limit:
                 break
 
-            raw_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
+            yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
             if batch_id:
                 self._my_wave_batch_id = batch_id
                 last_batch_id = batch_id
-            if not self._my_wave_radio_started_sent and raw_tracks:
+            if not self._my_wave_radio_started_sent and yandex_tracks:
                 sent = await self.client.send_rotor_station_feedback(
                     ROTOR_STATION_MY_MIX,
                     "radioStarted",
@@ -445,7 +562,7 @@ class KionMusicProvider(MusicProvider):
                 if sent:
                     self._my_wave_radio_started_sent = True
             first_track_id_this_batch = None
-            for yt in raw_tracks:
+            for yt in yandex_tracks:
                 if total_track_count >= effective_limit:
                     break
 
@@ -464,7 +581,7 @@ class KionMusicProvider(MusicProvider):
             if (
                 first_track_id_this_batch is None
                 or not batch_id
-                or not raw_tracks
+                or not yandex_tracks
                 or total_track_count >= effective_limit
             ):
                 break
@@ -718,11 +835,6 @@ class KionMusicProvider(MusicProvider):
         Resolves each pin to its full media item via existing single-item lookups.
         Wave pins are skipped — MA has no native concept for them.
 
-        Pins are resolved concurrently via ``asyncio.gather`` so latency is
-        dominated by the slowest lookup rather than their sum. Individual
-        failures (``MediaNotFoundError`` / ``InvalidDataError``) are skipped
-        without aborting the batch.
-
         :return: List of resolved media items.
         """
         pins_list = await self.client.get_pins()
@@ -730,38 +842,24 @@ class KionMusicProvider(MusicProvider):
         if not pins:
             return []
 
-        tasks: list[Coroutine[Any, Any, MediaItemType]] = []
-        pin_descs: list[str] = []
+        items: list[MediaItemType] = []
         for pin in pins:
             pin_type = getattr(pin, "type", None)
             data = getattr(pin, "data", None)
             if data is None:
                 continue
-            if pin_type == "artist_item" and getattr(data, "id", None) is not None:
-                tasks.append(self.get_artist(str(data.id)))
-                pin_descs.append(f"artist:{data.id}")
-            elif pin_type == "album_item" and getattr(data, "id", None) is not None:
-                tasks.append(self.get_album(str(data.id)))
-                pin_descs.append(f"album:{data.id}")
-            elif pin_type == "playlist_item":
-                uid = getattr(data, "uid", None)
-                kind = getattr(data, "kind", None)
-                if uid is not None and kind is not None:
-                    tasks.append(self.get_playlist(f"{uid}:{kind}"))
-                    pin_descs.append(f"playlist:{uid}:{kind}")
-
-        if not tasks:
-            return []
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        items: list[MediaItemType] = []
-        for desc, result in zip(pin_descs, results, strict=True):
-            if isinstance(result, (MediaNotFoundError, InvalidDataError)):
-                self.logger.debug("Skipping pin %s: %s", desc, result)
-            elif isinstance(result, BaseException):
-                raise result
-            else:
-                items.append(result)
+            try:
+                if pin_type == "artist_item" and getattr(data, "id", None) is not None:
+                    items.append(await self.get_artist(str(data.id)))
+                elif pin_type == "album_item" and getattr(data, "id", None) is not None:
+                    items.append(await self.get_album(str(data.id)))
+                elif pin_type == "playlist_item":
+                    uid = getattr(data, "uid", None)
+                    kind = getattr(data, "kind", None)
+                    if uid is not None and kind is not None:
+                        items.append(await self.get_playlist(f"{uid}:{kind}"))
+            except (MediaNotFoundError, InvalidDataError) as err:
+                self.logger.debug("Skipping pin %s: %s", pin_type, err)
         return items
 
     async def _browse_history(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -982,7 +1080,7 @@ class KionMusicProvider(MusicProvider):
         # waves/ — show category folders
         if len(path_parts) == 1:
             folders: list[BrowseFolder] = []
-            # Personalized "My Mixes" first — only show if dashboard returns stations
+            # Personalized "My Mixs" first — only show if dashboard returns stations
             dashboard_stations = await self._get_dashboard_stations_cached()
             if dashboard_stations:
                 folders.append(
@@ -990,7 +1088,7 @@ class KionMusicProvider(MusicProvider):
                         item_id=MY_WAVES_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{MY_WAVES_FOLDER_ID}",
-                        name=names.get(MY_WAVES_FOLDER_ID, "My Mixes"),
+                        name=names.get(MY_WAVES_FOLDER_ID, "My Mixs"),
                         is_playable=False,
                     )
                 )
@@ -1168,13 +1266,13 @@ class KionMusicProvider(MusicProvider):
                 path,
                 state.last_track_id,
             )
-            raw_tracks, batch_id = await self.client.get_rotor_station_tracks(
+            yandex_tracks, batch_id = await self.client.get_rotor_station_tracks(
                 station_id, queue=state.last_track_id
             )
             if batch_id:
                 state.batch_id = batch_id
 
-            if not state.radio_started_sent and raw_tracks:
+            if not state.radio_started_sent and yandex_tracks:
                 sent = await self.client.send_rotor_station_feedback(
                     station_id,
                     "radioStarted",
@@ -1185,7 +1283,7 @@ class KionMusicProvider(MusicProvider):
 
             tracks: list[Track] = []
             first_track_id: str | None = None
-            for yt in raw_tracks:
+            for yt in yandex_tracks:
                 if len(state.seen_track_ids) >= max_tracks:
                     break
                 track = self._parse_my_wave_track(yt, state.seen_track_ids)
@@ -1437,6 +1535,7 @@ class KionMusicProvider(MusicProvider):
             MediaType.ALBUM: "album",
             MediaType.ARTIST: "artist",
             MediaType.PLAYLIST: "playlist",
+            MediaType.PODCAST: "podcast",
         }
         requested_types = [type_mapping[mt] for mt in media_types if mt in type_mapping]
 
@@ -1479,6 +1578,15 @@ class KionMusicProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing playlist: %s", err)
 
+        # Parse podcasts (Kion returns them as albums under .podcasts)
+        podcasts_node = getattr(search_result, "podcasts", None)
+        if MediaType.PODCAST in media_types and podcasts_node:
+            for album in podcasts_node.results[:limit]:
+                try:
+                    result.podcasts = [*result.podcasts, parse_podcast(self, album)]
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing podcast: %s", err)
+
         return result
 
     # Get single items
@@ -1512,6 +1620,87 @@ class KionMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
         return parse_album(self, album)
 
+    @use_cache(3600 * 24)
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get podcast details by ID (backed by a Kion album).
+
+        :param prov_podcast_id: The provider podcast (album) ID.
+        :return: Podcast object.
+        :raises MediaNotFoundError: If not found.
+        """
+        album = await self.client.get_album(prov_podcast_id)
+        if not album:
+            raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
+        return parse_podcast(self, album)
+
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
+        """Iterate podcast episodes for a given podcast (album) ID."""
+        album = await self.client.get_album_with_tracks(prov_podcast_id)
+        if not album:
+            raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
+        podcast = parse_podcast(self, album)
+        position = 1
+        for disc in album.volumes or []:
+            for track_obj in disc:
+                try:
+                    yield parse_podcast_episode(self, track_obj, podcast, position=position)
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing podcast episode: %s", err)
+                position += 1
+
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get a single podcast episode by ID.
+
+        The parent Podcast is reconstructed from the track's parent album. If
+        the album isn't present on the track, the episode cannot be converted
+        into a valid MA model and InvalidDataError is raised.
+        """
+        tracks = await self.client.get_tracks([prov_episode_id])
+        if not tracks:
+            raise MediaNotFoundError(f"Podcast episode {prov_episode_id} not found")
+        track_obj = tracks[0]
+        if not track_obj.albums:
+            raise InvalidDataError(
+                f"Podcast episode {prov_episode_id} is missing parent podcast album data"
+            )
+        podcast = parse_podcast(self, track_obj.albums[0])
+        return parse_podcast_episode(self, track_obj, podcast, position=0)
+
+    @use_cache(3600 * 24)
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get audiobook details by ID, including chapters built from tracks.
+
+        :param prov_audiobook_id: The provider audiobook (album) ID.
+        :return: Audiobook object.
+        :raises MediaNotFoundError: If not found.
+        """
+        album = await self.client.get_album_with_tracks(prov_audiobook_id)
+        if not album:
+            raise MediaNotFoundError(f"Audiobook {prov_audiobook_id} not found")
+        audiobook = parse_audiobook(self, album)
+
+        chapters: list[MediaItemChapter] = []
+        start = 0.0
+        pos = 1
+        for disc in album.volumes or []:
+            for track_obj in disc:
+                dur_s = (track_obj.duration_ms or 0) / 1000.0
+                chapters.append(
+                    MediaItemChapter(
+                        position=pos,
+                        name=track_obj.title or f"Chapter {pos}",
+                        start=start,
+                        end=start + dur_s,
+                    )
+                )
+                start += dur_s
+                pos += 1
+        audiobook.metadata.chapters = chapters
+        audiobook.duration = int(start)
+        return audiobook
+
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details by ID.
 
@@ -1534,14 +1723,14 @@ class KionMusicProvider(MusicProvider):
         :return: Track object.
         :raises MediaNotFoundError: If track not found.
         """
-        raw_track = await self.client.get_track(track_id)
-        if not raw_track:
+        yandex_track = await self.client.get_track(track_id)
+        if not yandex_track:
             raise MediaNotFoundError(f"Track {track_id} not found")
 
         # Use the already-fetched track object to avoid a duplicate API call
-        lyrics, lyrics_synced = await self.client.get_track_lyrics_from_track(raw_track)
+        lyrics, lyrics_synced = await self.client.get_track_lyrics_from_track(yandex_track)
 
-        return parse_track(self, raw_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
+        return parse_track(self, yandex_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details by ID.
@@ -1650,10 +1839,10 @@ class KionMusicProvider(MusicProvider):
                 if len(self._my_wave_seen_track_ids) >= max_tracks_config:
                     break
 
-                raw_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
+                yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
                 if batch_id:
                     self._my_wave_batch_id = batch_id
-                if not self._my_wave_radio_started_sent and raw_tracks:
+                if not self._my_wave_radio_started_sent and yandex_tracks:
                     sent = await self.client.send_rotor_station_feedback(
                         ROTOR_STATION_MY_MIX,
                         "radioStarted",
@@ -1662,11 +1851,11 @@ class KionMusicProvider(MusicProvider):
                     if sent:
                         self._my_wave_radio_started_sent = True
 
-                if not raw_tracks:
+                if not yandex_tracks:
                     break
 
                 first_track_id_this_batch = None
-                for yt in raw_tracks:
+                for yt in yandex_tracks:
                     if len(self._my_wave_seen_track_ids) >= max_tracks_config:
                         break
 
@@ -1781,9 +1970,9 @@ class KionMusicProvider(MusicProvider):
         """
         track_id, _ = _parse_radio_item_id(prov_track_id)
         station_id = f"track:{track_id}"
-        raw_tracks, _ = await self.client.get_rotor_station_tracks(station_id, queue=None)
+        yandex_tracks, _ = await self.client.get_rotor_station_tracks(station_id, queue=None)
         tracks = []
-        for yt in raw_tracks[:limit]:
+        for yt in yandex_tracks[:limit]:
             try:
                 tracks.append(parse_track(self, yt))
             except InvalidDataError as err:
@@ -1798,9 +1987,9 @@ class KionMusicProvider(MusicProvider):
         :param limit: Maximum number of artists to return.
         :return: List of similar Artist objects.
         """
-        raw_artists = await self.client.get_similar_artists(prov_artist_id, limit=limit)
+        yandex_artists = await self.client.get_similar_artists(prov_artist_id, limit=limit)
         artists: list[Artist] = []
-        for ya in raw_artists:
+        for ya in yandex_artists:
             try:
                 artists.append(parse_artist(self, ya))
             except InvalidDataError as err:
@@ -1881,12 +2070,12 @@ class KionMusicProvider(MusicProvider):
             if len(seen_track_ids) >= max_tracks_config:
                 break
 
-            raw_tracks, _ = await self.client.get_my_wave_tracks(queue=queue)
-            if not raw_tracks:
+            yandex_tracks, _ = await self.client.get_my_wave_tracks(queue=queue)
+            if not yandex_tracks:
                 break
 
             first_track_id_this_batch = None
-            for yt in raw_tracks:
+            for yt in yandex_tracks:
                 if len(seen_track_ids) >= max_tracks_config:
                     break
 
@@ -2326,15 +2515,58 @@ class KionMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library artist: %s", err)
 
+    async def _get_liked_albums_cached(self, ttl: float = 30.0) -> list[YandexAlbum]:
+        """Return liked albums with a short in-process TTL cache + lock.
+
+        Albums, podcasts and audiobooks are all derived from the same
+        ``users/{uid}/likes/albums`` endpoint, so a full library sync would
+        otherwise trigger three sequential (or concurrent) identical calls.
+        The lock serializes refreshes so only one request hits the API when
+        multiple library syncs start together.
+        """
+        async with self._liked_albums_lock:
+            now = asyncio.get_running_loop().time()
+            if self._liked_albums_cache is not None:
+                cached_at, cached = self._liked_albums_cache
+                if now - cached_at < ttl:
+                    return cached
+            albums = await self.client.get_liked_albums(batch_size=TRACK_BATCH_SIZE)
+            self._liked_albums_cache = (now, albums)
+            return albums
+
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        """Retrieve library albums from KION Music."""
-        batch_size = TRACK_BATCH_SIZE
-        albums = await self.client.get_liked_albums(batch_size=batch_size)
-        for album in albums:
+        """Retrieve library albums from KION Music.
+
+        Excludes entries classified as podcasts or audiobooks so they don't
+        duplicate into the Albums library view.
+        """
+        for album in await self._get_liked_albums_cached():
+            if classify_album(album) != "music":
+                continue
             try:
                 yield parse_album(self, album)
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library album: %s", err)
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+        """Retrieve library podcasts from KION Music (filtered liked albums)."""
+        for album in await self._get_liked_albums_cached():
+            if classify_album(album) != "podcast":
+                continue
+            try:
+                yield parse_podcast(self, album)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library podcast: %s", err)
+
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+        """Retrieve library audiobooks from KION Music (filtered liked albums)."""
+        for album in await self._get_liked_albums_cached():
+            if classify_album(album) != "audiobook":
+                continue
+            try:
+                yield parse_audiobook(self, album)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library audiobook: %s", err)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from KION Music."""
@@ -2397,7 +2629,7 @@ class KionMusicProvider(MusicProvider):
 
         if item.media_type == MediaType.TRACK:
             return await self.client.like_track(track_id)
-        if item.media_type == MediaType.ALBUM:
+        if item.media_type in (MediaType.ALBUM, MediaType.PODCAST, MediaType.AUDIOBOOK):
             return await self.client.like_album(prov_item_id)
         if item.media_type == MediaType.ARTIST:
             return await self.client.like_artist(prov_item_id)
@@ -2413,7 +2645,7 @@ class KionMusicProvider(MusicProvider):
         track_id, _ = _parse_radio_item_id(prov_item_id)
         if media_type == MediaType.TRACK:
             return await self.client.unlike_track(track_id)
-        if media_type == MediaType.ALBUM:
+        if media_type in (MediaType.ALBUM, MediaType.PODCAST, MediaType.AUDIOBOOK):
             return await self.client.unlike_album(prov_item_id)
         if media_type == MediaType.ARTIST:
             return await self.client.unlike_artist(prov_item_id)
@@ -2431,28 +2663,187 @@ class KionMusicProvider(MusicProvider):
     async def get_stream_details(
         self, item_id: str, media_type: MediaType = MediaType.TRACK
     ) -> StreamDetails:
-        """Get stream details for a track.
+        """Get stream details for a track, podcast episode, or audiobook.
 
-        :param item_id: The track ID (or track_id@station_id for My Mix).
-        :param media_type: The media type (should be TRACK).
-        :return: StreamDetails for the track.
+        A podcast episode is a track underneath the Kion API, so it flows
+        through the same per-track streaming path. An audiobook is an album
+        with multiple tracks (chapters) — returned as a CUSTOM stream whose
+        generator concatenates each chapter's bytes in order.
+
+        :param item_id: The track / episode ID (or track_id@station_id for My Mix),
+            or the audiobook (album) ID when ``media_type`` is AUDIOBOOK.
+        :param media_type: The media type.
+        :return: StreamDetails for the item.
         """
+        if media_type == MediaType.AUDIOBOOK:
+            return await self._get_audiobook_stream_details(item_id)
         return await self.streaming.get_stream_details(item_id)
+
+    async def _get_audiobook_stream_details(self, audiobook_id: str) -> StreamDetails:
+        """Build StreamDetails for an audiobook as a chapter-concatenated CUSTOM stream.
+
+        Loads the album's tracks, uses the first chapter to establish the audio
+        format, and stores the per-chapter track-IDs + durations in ``data`` so
+        ``get_audio_stream`` can iterate them. ``can_seek=True`` so MA routes
+        ``seek_position`` into ``get_audio_stream``, where the provider translates
+        it into ``(start_chapter, in_chapter_offset)``. In-chapter precision
+        requires a byte-seekable chapter codec (raw MP3); otherwise the chapter
+        is restarted from its beginning.
+        """
+        album = await self.client.get_album_with_tracks(audiobook_id)
+        if not album or not (album.volumes or []):
+            raise MediaNotFoundError(f"Audiobook {audiobook_id} has no chapters")
+
+        chapter_ids: list[str] = []
+        chapter_durations_ms: list[int] = []
+        for disc in album.volumes or []:
+            for track_obj in disc:
+                chapter_ids.append(str(track_obj.id))
+                chapter_durations_ms.append(int(track_obj.duration_ms or 0))
+        if not chapter_ids:
+            raise MediaNotFoundError(f"Audiobook {audiobook_id} has no chapters")
+
+        # Resolve first-chapter format so MA/ffmpeg know what it's decoding
+        first = await self.streaming.get_stream_details(chapter_ids[0])
+        total_duration = sum(chapter_durations_ms) // 1000
+
+        return StreamDetails(
+            item_id=audiobook_id,
+            provider=self.instance_id,
+            media_type=MediaType.AUDIOBOOK,
+            audio_format=first.audio_format,
+            stream_type=StreamType.CUSTOM,
+            duration=total_duration,
+            data={
+                "chapter_ids": chapter_ids,
+                "chapter_durations_ms": chapter_durations_ms,
+            },
+            can_seek=True,
+            allow_seek=True,
+        )
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item.
 
-        Uses windowed Range-request streaming to prevent Kion CDN drops.
-        Handles both raw (direct) and encrypted (encraw) transports.
+        For tracks and podcast episodes, streams via windowed Range requests
+        (raw or AES-CTR encrypted). For audiobooks, iterates chapters: each
+        chapter's bytes are streamed through the per-track path and concatenated.
 
         :param streamdetails: Stream details with URL and optional decryption key.
         :param seek_position: Seek position in seconds (handled by provider for raw transport).
         :return: Async generator yielding audio chunks.
         """
+        data = streamdetails.data if isinstance(streamdetails.data, dict) else None
+        if streamdetails.media_type == MediaType.AUDIOBOOK and data and "chapter_ids" in data:
+            async for chunk in self._stream_audiobook_chapters(data, seek_position):
+                yield chunk
+            return
         async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
             yield chunk
+
+    def _resolve_audiobook_seek(
+        self, chapter_durations_ms: list[int], seek_position: int, n_chapters: int
+    ) -> tuple[int, int]:
+        """Map an audiobook ``seek_position`` (seconds) to (start_idx, chapter_seek)."""
+        if seek_position <= 0 or not chapter_durations_ms:
+            return 0, 0
+        accumulated_ms = 0
+        seek_ms = seek_position * 1000
+        for idx, dur_ms in enumerate(chapter_durations_ms):
+            if accumulated_ms + dur_ms > seek_ms:
+                return idx, (seek_ms - accumulated_ms) // 1000
+            accumulated_ms += dur_ms
+        # Seek past end — start at last chapter from 0
+        return max(n_chapters - 1, 0), 0
+
+    async def _stream_audiobook_chapters(
+        self, data: dict[str, Any], seek_position: int
+    ) -> AsyncGenerator[bytes, None]:
+        """Concatenate per-chapter streams of an audiobook.
+
+        Translates ``seek_position`` into (start_chapter, in_chapter_offset) and
+        delegates each chapter to the per-track streaming path. In-chapter offset
+        is only applied when the chapter codec is byte-seekable (``can_seek``);
+        otherwise the chapter is restarted from its beginning. Tracks consecutive
+        chapter failures and raises ``MediaNotFoundError`` once the threshold is
+        exceeded, so playback never silently truncates.
+        """
+        chapter_ids: list[str] = list(data.get("chapter_ids") or [])
+        chapter_durations_ms: list[int] = list(data.get("chapter_durations_ms") or [])
+        if not chapter_ids:
+            return
+
+        start_idx, chapter_seek = self._resolve_audiobook_seek(
+            chapter_durations_ms, seek_position, len(chapter_ids)
+        )
+
+        max_consecutive_failures = 3
+        consecutive_failures = 0
+        has_yielded_audio = False
+        last_error: Exception | None = None
+
+        for idx in range(start_idx, len(chapter_ids)):
+            chapter_id = chapter_ids[idx]
+            requested_offset = chapter_seek if idx == start_idx else 0
+            chapter_details: StreamDetails | None = None
+            try:
+                chapter_details = await self.streaming.get_stream_details(chapter_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                last_error = err
+                self.logger.warning(
+                    "Audiobook chapter %d (%s) stream-details failed: %s",
+                    idx + 1,
+                    chapter_id,
+                    err,
+                )
+
+            if chapter_details is None:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    raise MediaNotFoundError(
+                        "Unable to stream audiobook: too many consecutive chapter failures"
+                    ) from last_error
+                continue
+
+            # Apply the in-chapter offset only when the chapter codec supports
+            # byte-offset seeking; otherwise restart the chapter from 0 to avoid
+            # decoding garbled bytes from mid-file of a container format.
+            offset = requested_offset if chapter_details.can_seek else 0
+            chapter_had_audio = False
+            try:
+                async for chunk in self.streaming.get_audio_stream(chapter_details, offset):
+                    chapter_had_audio = True
+                    has_yielded_audio = True
+                    yield chunk
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                last_error = err
+                self.logger.warning(
+                    "Audiobook chapter %d (%s) stream failed mid-play: %s",
+                    idx + 1,
+                    chapter_id,
+                    err,
+                )
+
+            if chapter_had_audio:
+                consecutive_failures = 0
+                last_error = None
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    raise MediaNotFoundError(
+                        "Unable to stream audiobook: too many consecutive chapter failures"
+                    ) from last_error
+
+        if not has_yielded_audio:
+            raise MediaNotFoundError(
+                "Unable to stream audiobook: no playable chapters found"
+            ) from last_error
 
     async def get_rotor_station_tracks(
         self, station_id: str, queue: str | int | None = None
@@ -2464,15 +2855,8 @@ class KionMusicProvider(MusicProvider):
         return await self.client.get_rotor_station_tracks(station_id, queue=queue)
 
     def get_quality(self) -> str:
-        """Return the configured audio quality tier (e.g. 'balanced', 'superb').
-
-        Mirrors the legacy-value normalization used by the streaming layer:
-        older configs store the lossless tier as ``"lossless"``, while the
-        current canonical value is ``QUALITY_LOSSLESS`` (``"superb"``).
-        External callers (e.g. the ynison plugin wrapper) see the same
-        normalized value the streaming code would resolve to.
-        """
-        quality = str(self.config.get_value(CONF_QUALITY) or "").strip().lower()
+        """Return the configured audio quality tier (e.g. 'balanced', 'superb')."""
+        quality = str(self.config.get_value(CONF_QUALITY) or QUALITY_BALANCED).strip().lower()
         if quality == "lossless":
             quality = QUALITY_LOSSLESS
         return quality
@@ -2535,12 +2919,20 @@ class KionMusicProvider(MusicProvider):
 
         Sends trackStarted when the track is currently playing (is_playing=True).
         trackFinished/skip are sent from on_streamed to use accurate seconds_streamed.
+
+        Also auto-enables "Don't stop the music" for any queue playing a radio track
+        so that MA refills the queue via get_similar_tracks when < 5 tracks remain.
         """
+        # Radio feedback always enabled
         if media_type != MediaType.TRACK:
             return
         track_id, station_id = _parse_radio_item_id(prov_item_id)
         if not station_id:
             return
+        # Auto-enable "Don't stop the music" on every on_played call for radio tracks.
+        # Calling on every invocation (not just is_playing=True) ensures it fires even
+        # for short tracks that finish before the 30-second periodic callback.
+        self._ensure_dont_stop_the_music(prov_item_id)
         if is_playing:
             if station_id == ROTOR_STATION_MY_MIX:
                 batch_id = self._my_wave_batch_id
@@ -2553,6 +2945,91 @@ class KionMusicProvider(MusicProvider):
                 track_id=track_id,
                 batch_id=batch_id,
             )
+            # Remove duplicate call that was under is_playing guard.
+            # _ensure_dont_stop_the_music is now called unconditionally above.
+
+    def _ensure_dont_stop_the_music(self, prov_item_id: str) -> None:
+        """Enable 'Don't stop the music' on queues playing this specific radio item.
+
+        Iterates all queues and enables the setting on queues whose current track
+        mapping matches this exact composite item_id (track_id@station_id) for this
+        provider instance.
+
+        Also sets queue.radio_source directly to the current track because
+        enqueued_media_items is empty for BrowseFolder-initiated playback, which
+        normally prevents MA's auto-fill from triggering. Setting radio_source
+        directly bypasses that gap so _fill_radio_tracks runs when < 5 tracks remain.
+        """
+        for queue in self.mass.player_queues:
+            current = queue.current_item
+            if current is None or current.media_item is None:
+                continue
+            item = current.media_item
+            # Match by provider instance and exact composite item_id
+            for mapping in getattr(item, "provider_mappings", []):
+                if (
+                    mapping.provider_instance == self.instance_id
+                    and mapping.item_id == prov_item_id
+                ):
+                    # Set radio_source directly so MA's fill mechanism works even when
+                    # the queue was started from a BrowseFolder (enqueued_media_items empty).
+                    if not queue.radio_source and isinstance(item, Track):
+                        queue.radio_source = [item]
+                    if not queue.dont_stop_the_music_enabled:
+                        try:
+                            self.mass.player_queues.set_dont_stop_the_music(
+                                queue.queue_id, dont_stop_the_music_enabled=True
+                            )
+                            self.logger.info(
+                                "Auto-enabled 'Don't stop the music' for queue %s (radio station)",
+                                queue.display_name,
+                            )
+                        except Exception as err:
+                            self.logger.debug(
+                                "Could not enable 'Don't stop the music' for queue %s: %s",
+                                queue.display_name,
+                                err,
+                            )
+                    break
+
+    def _ensure_dont_stop_the_music_for_queue(self, queue_id: str | None) -> None:
+        """Enable 'Don't stop the music' for a specific queue by ID.
+
+        Faster variant of _ensure_dont_stop_the_music used from on_streamed where
+        queue_id is available directly, avoiding iteration over all queues.
+        """
+        if not queue_id:
+            return
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            return
+        current = queue.current_item
+        if current is None or current.media_item is None:
+            return
+        item = current.media_item
+        for mapping in getattr(item, "provider_mappings", []):
+            if (
+                mapping.provider_instance == self.instance_id
+                and RADIO_TRACK_ID_SEP in mapping.item_id
+            ):
+                if not queue.radio_source and isinstance(item, Track):
+                    queue.radio_source = [item]
+                if not queue.dont_stop_the_music_enabled:
+                    try:
+                        self.mass.player_queues.set_dont_stop_the_music(
+                            queue_id, dont_stop_the_music_enabled=True
+                        )
+                        self.logger.info(
+                            "Auto-enabled 'Don't stop the music' for queue %s (radio)",
+                            queue.display_name,
+                        )
+                    except Exception as err:
+                        self.logger.debug(
+                            "Could not enable 'Don't stop the music' for queue %s: %s",
+                            queue.display_name,
+                            err,
+                        )
+                break
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Report stream completion for My Mix rotor feedback.
@@ -2560,9 +3037,13 @@ class KionMusicProvider(MusicProvider):
         Sends trackFinished or skip with actual seconds_streamed so Kion
         can improve recommendations.
         """
+        # Radio feedback always enabled
         track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
         if not station_id:
             return
+        # Also ensure Don't stop the music is active — on_streamed fires even for
+        # very short tracks and we have queue_id here directly.
+        self._ensure_dont_stop_the_music_for_queue(streamdetails.queue_id)
         seconds = int(streamdetails.seconds_streamed or 0)
         duration = streamdetails.duration or 0
         feedback_type = "trackFinished" if duration and seconds >= max(0, duration - 10) else "skip"

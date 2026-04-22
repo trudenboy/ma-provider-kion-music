@@ -11,7 +11,14 @@ CONF_BASE_URL = "base_url"
 
 # Actions
 CONF_ACTION_AUTH = "auth"
+CONF_ACTION_AUTH_QR = "auth_qr"
+CONF_ACTION_AUTH_DEVICE = "auth_device"
 CONF_ACTION_CLEAR_AUTH = "clear_auth"
+
+# QR authentication config keys
+CONF_X_TOKEN = "x_token"
+CONF_REFRESH_TOKEN: Final[str] = "refresh_token"
+CONF_REMEMBER_SESSION = "remember_session"
 
 # Labels
 LABEL_TOKEN = "token_label"
@@ -80,7 +87,7 @@ PROVIDER_DISPLAY_NAME_EN: Final[str] = "KION Music"
 
 # Known API-returned system owner name variants (all locales/capitalizations)
 # All entries are lowercase; compare with owner_name.lower() for case-insensitive lookup
-KION_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
+YANDEX_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
     {
         "кион музыка",
         "кион.музыка",
