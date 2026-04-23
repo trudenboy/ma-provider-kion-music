@@ -58,6 +58,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.0.1] - 2026-04-23
+
+- fix(streaming): treat MP4-container codecs as MP4+codec_type, tighten lossless match (`cc907b1`)
+- fix: remove auto-enable of "Don't stop the music" from on_played/on_streamed (`6130ff5`)
+- fix: always set track.metadata.lyrics so synced LRC isn't skipped by core (`55227cb`)
+- docs: enrich 3.0.0 changelog with PR #89 functional highlights (`e08525a`)
+- chore: update changelog for v3.0.0 [skip ci] (`8592859`)
+
+---
+
 <!-- changelog entries will be added here by release workflow -->
 
 ## [2.6.7] - 2026-02-27
