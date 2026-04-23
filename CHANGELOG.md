@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-04-23
+
+- fix(streaming): return `(MP4, FLAC)` / `(MP4, AAC)` for MP4-container codecs, matching the
+  yandex_music provider convention so MA core treats flac-mp4/aac-mp4 as MP4 containers
+  (correct mime type, seek handling, passthrough) rather than raw FLAC/AAC byte streams.
+- fix(streaming): tighten `_select_best_quality` lossless detection to exact match on
+  `{QUALITY_LOSSLESS, "lossless"}` — no longer matches arbitrary strings containing
+  "lossless" (e.g. "lossless_foo").
+
 ## [3.0.0] - 2026-04-20
 
 - Bump version from 2.6.7 to 3.0.0 (`5ecbed1`)

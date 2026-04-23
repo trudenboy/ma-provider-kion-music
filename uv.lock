@@ -933,18 +933,6 @@ wheels = [
 ]
 
 [[package]]
-name = "hass-client"
-version = "1.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiohttp" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c9/e2/3907d9f4c008e46e793c4364ad9655b0c4afad43d675555eb2faf164b9d3/hass_client-1.2.0.tar.gz", hash = "sha256:c7a8ba3ab7ceddf506f9eadd808d3b4aa34ebb05c89509aecd6daa422f1ee916", size = 15488, upload-time = "2024-07-05T21:46:23.106Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/19/e60ea7c8cc22a85f484106087634623dab686adb521e2fb756de57c12048/hass_client-1.2.0-py3-none-any.whl", hash = "sha256:e73f4af3646cbe614b30b45ec07adccf39281157cc6377ec7651f1ab48a8c9bc", size = 15282, upload-time = "2024-07-05T21:46:21.35Z" },
-]
-
-[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1146,13 +1134,11 @@ wheels = [
 
 [[package]]
 name = "ma-provider-kion-music"
-version = "1.0.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
 test = [
     { name = "codespell" },
-    { name = "hass-client" },
     { name = "music-assistant" },
     { name = "mypy" },
     { name = "pre-commit" },
@@ -1163,24 +1149,21 @@ test = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "syrupy" },
-    { name = "yandex-music" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "codespell", marker = "extra == 'test'", specifier = "==2.4.1" },
-    { name = "hass-client", marker = "extra == 'test'", specifier = ">=1.2.0" },
+    { name = "codespell", marker = "extra == 'test'", specifier = ">=2.4" },
     { name = "music-assistant", marker = "extra == 'test'", git = "https://github.com/music-assistant/server.git?rev=dev" },
-    { name = "mypy", marker = "extra == 'test'", specifier = "==1.19.1" },
-    { name = "pre-commit", marker = "extra == 'test'", specifier = "==4.5.1" },
-    { name = "pre-commit-hooks", marker = "extra == 'test'", specifier = "==6.0.0" },
-    { name = "pytest", marker = "extra == 'test'", specifier = "==9.0.2" },
-    { name = "pytest-aiohttp", marker = "extra == 'test'", specifier = "==1.1.0" },
+    { name = "mypy", marker = "extra == 'test'", specifier = ">=1.19" },
+    { name = "pre-commit", marker = "extra == 'test'", specifier = ">=4.5" },
+    { name = "pre-commit-hooks", marker = "extra == 'test'", specifier = ">=6.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=9.0" },
+    { name = "pytest-aiohttp", marker = "extra == 'test'", specifier = ">=1.1" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24" },
-    { name = "pytest-cov", marker = "extra == 'test'", specifier = "==7.0.0" },
-    { name = "ruff", marker = "extra == 'test'", specifier = "==0.14.13" },
-    { name = "syrupy", marker = "extra == 'test'", specifier = "==5.0.0" },
-    { name = "yandex-music", marker = "extra == 'test'", specifier = "==3.0.0" },
+    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=7.0" },
+    { name = "ruff", marker = "extra == 'test'", specifier = ">=0.14" },
+    { name = "syrupy", marker = "extra == 'test'", specifier = ">=5.0" },
 ]
 provides-extras = ["test"]
 
@@ -1984,15 +1967,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pysocks"
-version = "1.7.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/bd/11/293dd436aea955d45fc4e8a35b6ae7270f5b8e00b53cf6c024c83b657a11/PySocks-1.7.1.tar.gz", hash = "sha256:3f8804571ebe159c380ac6de37643bb4685970655d3bba243530d6558b799aa0", size = 284429, upload-time = "2019-09-20T02:07:35.714Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/59/b4572118e098ac8e46e399a1dd0f2d85403ce8bbaad9ec79373ed6badaf9/PySocks-1.7.1-py3-none-any.whl", hash = "sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5", size = 16725, upload-time = "2019-09-20T02:06:22.938Z" },
-]
-
-[[package]]
 name = "pytest"
 version = "9.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2132,11 +2106,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c9/74/b3ff8e6c8446842c3f5c837e9c3dfcfe2018ea6ecef224c710c85ef728f4/requests-2.32.5.tar.gz", hash = "sha256:dbba0bac56e100853db0ea71b82b4dfd5fe2bf6d3754a8893c3af500cec7d7cf", size = 134517, upload-time = "2025-08-18T20:46:02.573Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/db/4254e3eabe8020b458f1a747140d32277ec7a271daf1d235b70dc0b4e6e3/requests-2.32.5-py3-none-any.whl", hash = "sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6", size = 64738, upload-time = "2025-08-18T20:46:00.542Z" },
-]
-
-[package.optional-dependencies]
-socks = [
-    { name = "pysocks" },
 ]
 
 [[package]]
@@ -2518,16 +2487,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/6a/aa/917ceeed4dbb80d2f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c0/20/69a0e6058bc5ea74892d089d64dfc3a62ba78917ec5e2cfa70f7c92ba3a5/xmltodict-1.0.2-py3-none-any.whl", hash = "sha256:62d0fddb0dcbc9f642745d8bbf4d81fd17d6dfaec5a15b5c1876300aad92af0d", size = 13893, upload-time = "2025-09-17T21:59:24.859Z" },
 ]
-
-[[package]]
-name = "yandex-music"
-version = "3.0.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "requests", extra = ["socks"] },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ce/e0/3b264e5d8442d57c2668fe6b98eb3b4be6ea489a74d1faea190c964e54db/yandex_music-3.0.0.tar.gz", hash = "sha256:a0fbb5c838726f2806af547a48e9dba315d2779b9273d5da8b4ef1749cac3320", size = 261855, upload-time = "2026-04-18T17:06:49.649Z" }
 
 [[package]]
 name = "yarl"
