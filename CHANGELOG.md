@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.2] - 2026-04-28
+
+- fix(api_client): strip base64 padding from the `/get-file-info` HMAC signature via
+  `.rstrip("=")` instead of a fixed `[:-1]` slice, so the sign stays valid even if the
+  padding length ever differs from one character.
+
 ## [3.0.1] - 2026-04-23
 
 - fix(streaming): return `(MP4, FLAC)` / `(MP4, AAC)` for MP4-container codecs, matching the
