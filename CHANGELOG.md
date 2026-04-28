@@ -74,6 +74,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.0.2] - 2026-04-28
+
+- fix(api_client): strip base64 sign padding via rstrip("=") (`428411b`)
+- chore: update changelog for v3.0.1 [skip ci] (`92c34a3`)
+
+---
+
 <!-- changelog entries will be added here by release workflow -->
 
 ## [2.6.7] - 2026-02-27
