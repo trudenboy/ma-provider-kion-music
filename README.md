@@ -1,5 +1,18 @@
 # Провайдер KION Музыки для Music Assistant
 
+
+<!-- >>> ma-provider-tools sync (readme header) — DO NOT EDIT >>> -->
+[![CI](https://github.com/trudenboy/ma-provider-kion-music/actions/workflows/test.yml/badge.svg)](https://github.com/trudenboy/ma-provider-kion-music/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/trudenboy/ma-provider-kion-music?display_name=tag)](https://github.com/trudenboy/ma-provider-kion-music/releases/latest)
+[![License](https://img.shields.io/github/license/trudenboy/ma-provider-kion-music)](LICENSE)
+[![Music Assistant](https://img.shields.io/badge/Music%20Assistant-provider-9070B8?logo=python&logoColor=white)](https://www.music-assistant.io/)
+[![Stars](https://img.shields.io/github/stars/trudenboy/ma-provider-kion-music?style=flat&logo=github)](https://github.com/trudenboy/ma-provider-kion-music/stargazers)
+
+**📖 [Documentation / Документация](https://trudenboy.github.io/ma-provider-kion-music/)** · **🔄 [Changelog / Журнал](CHANGELOG.md)** · **🐛 [Issues / Проблемы](https://github.com/trudenboy/ma-provider-kion-music/issues)** · **💬 [Discussions / Обсуждения](https://github.com/trudenboy/ma-provider-kion-music/discussions)**
+
+**Related providers:** [Yandex Music](https://github.com/trudenboy/ma-provider-yandex-music)
+<!-- <<< ma-provider-tools sync (readme header) <<< -->
+
 [English](README.en.md) | Русский
 
 📖 <a href="https://trudenboy.github.io/ma-provider-kion-music/">Документация пользователя</a>
