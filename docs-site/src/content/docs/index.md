@@ -6,7 +6,7 @@ description: Документация провайдера KION Music для Mus
 <img src="https://raw.githubusercontent.com/trudenboy/ma-provider-kion-music/dev/provider/icon.svg" alt="KION Music" style="width: 72px; float: right; margin: 0 0 1rem 1.5rem;" />
 
 
-> KION Music (КИОН) provider for Music Assistant — российский музыкальный стриминг с HMAC signed playback
+> KION Music (КИОН/MTC) provider for Music Assistant — российский музыкальный стриминг
 
 
 [![CI](https://github.com/trudenboy/ma-provider-kion-music/actions/workflows/test.yml/badge.svg)](https://github.com/trudenboy/ma-provider-kion-music/actions/workflows/test.yml)
@@ -16,7 +16,7 @@ description: Документация провайдера KION Music для Mus
 [![Stars](https://img.shields.io/github/stars/trudenboy/ma-provider-kion-music?style=flat&logo=github)](https://github.com/trudenboy/ma-provider-kion-music/stargazers)
 
 
-<div class="topic-pills"> <code>music-assistant</code> <code>home-assistant</code> <code>python</code> <code>music-provider</code> <code>kion</code> <code>russia</code> <code>russian-music</code> <code>russian-streaming</code> <code>lossless-flac</code>
+<div class="topic-pills"> <code>music-assistant</code> <code>home-assistant</code> <code>python</code> <code>music-provider</code> <code>kion</code> <code>music</code> <code>музыка</code> <code>кион</code> <code>мтс</code> <code>streaming</code> <code>lossless-flac</code>
 </div>
 
 
