@@ -16,7 +16,7 @@ description: Документация провайдера KION Music для Mus
 [![Stars](https://img.shields.io/github/stars/trudenboy/ma-provider-kion-music?style=flat&logo=github)](https://github.com/trudenboy/ma-provider-kion-music/stargazers)
 
 
-<div class="topic-pills"> <code>music-assistant</code> <code>home-assistant</code> <code>python</code> <code>music-provider</code> <code>kion</code> <code>music</code> <code>музыка</code> <code>кион</code> <code>мтс</code> <code>streaming</code> <code>lossless-flac</code>
+<div class="topic-pills"> <code>music-assistant</code> <code>home-assistant</code> <code>python</code> <code>music-provider</code> <code>kion</code> <code>music</code> <code>mtc</code> <code>mts</code> <code>streaming</code> <code>lossless-flac</code>
 </div>
 
 
