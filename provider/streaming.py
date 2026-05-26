@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import aiohttp
 from aiohttp import ClientPayloadError, ServerDisconnectedError
@@ -48,6 +48,12 @@ _AES_BLOCK_SIZE = 16
 _TCP_DROP_DELAYS = (0.5, 1.0, 2.0)
 # Exponential delays for true network stalls (read timeout)
 _STALL_DELAYS = (2.0, 4.0, 8.0)
+
+# Normalize Kion codec names to MA ContentType values
+_CODEC_ALIASES: Final[dict[str, str]] = {
+    "he-aac": "aac",
+    "mpeg": "mp3",
+}
 
 
 class KionMusicStreamingManager:
@@ -238,7 +244,9 @@ class KionMusicStreamingManager:
             reverse=True,
         )
 
-        # Superb: Prefer FLAC (accept legacy "lossless" label for backward compatibility)
+        # Superb: Prefer FLAC. The legacy "lossless" alias still maps to Superb,
+        # but we use an exact-match set so a stray value like "lossless_foo"
+        # doesn't sneak in.
         if preferred_normalized in {QUALITY_LOSSLESS, "lossless"}:
             for codec in ("flac-mp4", "flac"):
                 for info in sorted_infos:
@@ -300,39 +308,41 @@ class KionMusicStreamingManager:
         return sorted_infos[0] if sorted_infos else None
 
     def _get_content_type(self, codec: str | None) -> tuple[ContentType, ContentType]:
-        """Determine container and codec type from Kion API codec string.
+        """Determine content_type and codec_type from Kion API codec string.
 
-        Kion API returns codec strings like "flac-mp4" (FLAC in MP4 container),
-        "aac-mp4" (AAC in MP4 container), or plain "flac", "mp3", "aac".
-        For MP4-container variants we return ContentType.MP4 as the container
-        and the actual audio codec via codec_type, matching the convention used
-        by the Yandex Music provider. This keeps container-aware behaviors in
-        MA core (mime type, seek handling, passthrough) correct.
+        Parses the codec string automatically:
+        - Simple codecs ("flac", "mp3", "aac") → (ContentType.<codec>, UNKNOWN)
+        - Compound "codec-container" ("flac-mp4", "aac-mp4") →
+          (ContentType.<codec>, ContentType.<codec>)
 
-        :param codec: Codec string from Kion API.
-        :return: Tuple of (content_type/container, codec_type).
+        content_type always reflects the audio codec (not the container),
+        so MA's is_lossless() correctly identifies lossless streams and
+        ffmpeg gets the right decoder name via codec_type.
+
+        :param codec: Codec string from Kion API (e.g. "flac-mp4", "mp3").
+        :return: Tuple of (content_type, codec_type).
         """
         if not codec:
             return ContentType.UNKNOWN, ContentType.UNKNOWN
 
         codec_lower = codec.lower()
 
-        # MP4 container variants: codec is inside an MP4 container
-        if codec_lower == "flac-mp4":
-            return ContentType.MP4, ContentType.FLAC
-        if codec_lower in ("aac-mp4", "he-aac-mp4"):
-            return ContentType.MP4, ContentType.AAC
+        # Strip container suffix: "flac-mp4" → "flac", "he-aac-mp4" → "he-aac"
+        has_container = codec_lower.endswith("-mp4")
+        audio_part = codec_lower[:-4] if has_container else codec_lower
 
-        # Plain single-codec formats: codec is implied by content_type
-        if codec_lower == "flac":
-            return ContentType.FLAC, ContentType.UNKNOWN
-        if codec_lower in ("mp3", "mpeg"):
-            return ContentType.MP3, ContentType.UNKNOWN
-        if codec_lower in ("aac", "he-aac"):
-            return ContentType.AAC, ContentType.UNKNOWN
+        # Normalize aliases (he-aac → aac, mpeg → mp3)
+        audio_part = _CODEC_ALIASES.get(audio_part, audio_part)
 
-        self.logger.debug("Unknown codec from Kion API: %s", codec)
-        return ContentType.UNKNOWN, ContentType.UNKNOWN
+        try:
+            content_type = ContentType(audio_part)
+        except ValueError:
+            self.logger.debug("Unknown codec from Kion API: %s", codec)
+            return ContentType.UNKNOWN, ContentType.UNKNOWN
+
+        # For compound formats, set codec_type so ffmpeg knows the decoder
+        codec_type = content_type if has_container else ContentType.UNKNOWN
+        return content_type, codec_type
 
     def _build_audio_format(
         self,
@@ -654,16 +664,10 @@ class KionMusicStreamingManager:
         bytes_yielded: int,
         attempt: int,
         max_retries: int,
-    ) -> bytes:
+    ) -> bytes | None:
         """Handle URL expiry (401/403/410) by refreshing and returning updated key.
 
-        On success returns the refreshed AES key bytes for encrypted streams,
-        or empty bytes for raw transport (caller ignores the return in that
-        case). Retry exhaustion raises ``MediaNotFoundError`` instead of
-        returning ``None``, so the function is guaranteed to produce a
-        ``bytes`` value when it returns.
-
-        :return: Updated AES key bytes (or empty bytes for raw transport).
+        :return: Updated AES key bytes (or empty bytes for raw), None if exhausted.
         :raises MediaNotFoundError: When refresh fails after retries exhausted.
         """
         if not await self._refresh_stream_url(
@@ -706,23 +710,12 @@ class KionMusicStreamingManager:
     ) -> int:
         """Calculate initial byte offset for raw transport seeking.
 
-        Byte-offset seeking is only safe for codecs where byte position and
-        time position are linearly related — i.e. raw MP3. MP4-container
-        formats (aac-mp4, flac-mp4) need the ftyp/moov init atoms at the
-        file start and raw FLAC frames are variable-size, so byte-offset
-        seeks there land in the middle of undecodable data. For those, we
-        return 0 and let ffmpeg handle time-based seeking via ``-ss``
-        (``allow_seek=True`` is set on the StreamDetails for that purpose).
-
         :param data: Stream data dict (must contain 'bit_rate' in kbps).
         :param seek_position: Seek offset in seconds.
         :param is_encrypted: Whether the stream uses AES encryption.
         :return: Byte offset to start streaming from (0 if not applicable).
         """
         if seek_position <= 0 or is_encrypted:
-            return 0
-        codec = str(data.get("codec") or "").lower()
-        if codec not in ("mp3", "mpeg"):
             return 0
         bit_rate = data.get("bit_rate") or 0
         if not bit_rate:
@@ -736,7 +729,7 @@ class KionMusicStreamingManager:
         )
         return byte_offset
 
-    async def get_audio_stream(  # noqa: PLR0915
+    async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream via windowed Range requests.
@@ -793,10 +786,6 @@ class KionMusicStreamingManager:
                         attempt += 1
                         retry_delay = 0.0
                         continue
-                    if response.status == 416:
-                        # Range Not Satisfiable — last complete window aligned with EOF,
-                        # so our next request asked past the end. Treat as EOF.
-                        return
                     try:
                         response.raise_for_status()
                     except Exception as err:

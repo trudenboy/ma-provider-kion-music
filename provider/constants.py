@@ -11,7 +11,14 @@ CONF_BASE_URL = "base_url"
 
 # Actions
 CONF_ACTION_AUTH = "auth"
+CONF_ACTION_AUTH_QR = "auth_qr"
+CONF_ACTION_AUTH_DEVICE = "auth_device"
 CONF_ACTION_CLEAR_AUTH = "clear_auth"
+
+# QR authentication config keys
+CONF_X_TOKEN = "x_token"
+CONF_REFRESH_TOKEN: Final[str] = "refresh_token"
+CONF_REMEMBER_SESSION = "remember_session"
 
 # Labels
 LABEL_TOKEN = "token_label"
@@ -65,9 +72,54 @@ CONF_LIKED_TRACKS_MAX_TRACKS: Final[str] = "liked_tracks_max_tracks"
 
 # Hardcoded default values for removed config entries
 MY_WAVE_BATCH_SIZE: Final[int] = 3
-TRACK_BATCH_SIZE: Final[int] = 50
+TRACK_BATCH_SIZE: Final[int] = 100
 DISCOVERY_INITIAL_TRACKS: Final[int] = 20
 BROWSE_INITIAL_TRACKS: Final[int] = 15
+
+# Rate-limit / smart-captcha handling.
+# Kion's smart-captcha edge protection is per-endpoint-family. When it
+# triggers (HTML body with smart-captcha markers), the corresponding
+# throttler "kind" is put in a quarantine for a duration picked from
+# CAPTCHA_COOLDOWN_LADDER_S based on how many captcha strikes that kind has
+# accumulated inside CAPTCHA_STRIKE_RETENTION_S. The first strike is cheap
+# (60s) so a transient burst during initial library sync does not stall the
+# provider for 10 minutes; repeated strikes escalate to the original 600s.
+# Plain 429 (no captcha markers) only signals backoff_time on the failing
+# request — no kind-wide block, no escalation.
+CAPTCHA_COOLDOWN_LADDER_S: Final[tuple[float, ...]] = (60.0, 300.0, 600.0)
+CAPTCHA_STRIKE_RETENTION_S: Final[float] = 3600.0
+RATE_LIMIT_COOLDOWN_S: Final[float] = 60.0
+
+# Per-kind request budgets (requests per second). Tuned by endpoint cost:
+# - file_info is signed + most aggressively rate-limited at Kion's edge
+# - rotor sits in the middle
+# - metadata covers the artist/album refresh burst MA fires during initial
+#   sync — kept low so it does not flood smart-captcha
+# - everything else (likes, tracks, search, playlists, ...) shares default
+THROTTLE_DEFAULT_RPS: Final[int] = 3
+THROTTLE_METADATA_RPS: Final[int] = 2
+THROTTLE_FILE_INFO_RPS: Final[int] = 2
+THROTTLE_ROTOR_RPS: Final[int] = 3
+
+# Initial-sync jitter: during the first INITIAL_SYNC_WINDOW_S after a
+# successful connect(), add up to INITIAL_SYNC_JITTER_S of uniform random
+# delay before acquiring the default/metadata throttlers. Smooths out the
+# parallel metadata-refresh burst MA fires immediately after a fresh
+# install + auth, which is what triggers smart-captcha in #146. After the
+# window expires the helper is a no-op — no steady-state overhead.
+INITIAL_SYNC_JITTER_S: Final[float] = 0.5
+INITIAL_SYNC_WINDOW_S: Final[float] = 60.0
+
+# get-file-info LRU cache. Bounded TTL so we never serve a URL after its CDN
+# expiry (Kion stream URLs live ~60s) but still absorb same-track replays
+# from MA's streaming retry loop.
+FILE_INFO_CACHE_TTL_S: Final[float] = 30.0
+FILE_INFO_CACHE_MAX: Final[int] = 256
+
+# Inter-batch jitter when hydrating large lists (liked tracks/albums).
+# Spreads requests so a 5-batch burst looks like a human, not a bot.
+LIKED_BATCH_JITTER_MIN_S: Final[float] = 0.15
+LIKED_BATCH_JITTER_SPAN_S: Final[float] = 0.20
 
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"
@@ -80,7 +132,7 @@ PROVIDER_DISPLAY_NAME_EN: Final[str] = "KION Music"
 
 # Known API-returned system owner name variants (all locales/capitalizations)
 # All entries are lowercase; compare with owner_name.lower() for case-insensitive lookup
-KION_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
+YANDEX_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
     {
         "кион музыка",
         "кион.музыка",
@@ -105,6 +157,87 @@ LIKED_TRACKS_PLAYLIST_ID: Final[str] = "liked_tracks"
 # Composite item_id for My Mix tracks: track_id + separator + station_id (for rotor feedback)
 RADIO_TRACK_ID_SEP: Final[str] = "@"
 
+# Wave-mode suffix separator: station keys like "user:onyourwave#discover" identify
+# a specific preset (diversity/moodEnergy/language) on top of the base My Mix station.
+# Chosen because # is not part of any rotor station ID format.
+WAVE_MODE_SEP: Final[str] = "#"
+
+# Known wave-mode presets: preset key (suffix after WAVE_MODE_SEP) → rotor session
+# settings dict. Names match the LMS KionMusic plugin and the Desktop client UI.
+MY_WAVE_MODES_FOLDER_ID: Final[str] = "my_wave_modes"
+MY_WAVE_PRESETS_FOLDER_ID: Final[str] = "my_wave_presets"
+
+# User-defined wave presets are now stored in a single hidden JSON config key.
+# The UI shows a small "builder" (name + three dropdowns) + Save / Delete
+# action buttons, so the user never has to edit JSON by hand but has no fixed
+# upper bound on preset count either.
+
+# Hidden JSON store. Shape: [{"name": str, "diversity"?: str,
+#                             "moodEnergy"?: str, "language"?: str}, ...]
+CONF_WAVE_PRESETS_DATA: Final[str] = "wave_presets_data"
+
+# Visible "working preset" fields — filled in, then copied into the JSON list
+# by the save action and cleared afterwards.
+CONF_WAVE_PRESET_DRAFT_NAME: Final[str] = "wave_preset_draft_name"
+CONF_WAVE_PRESET_DRAFT_DIVERSITY: Final[str] = "wave_preset_draft_diversity"
+CONF_WAVE_PRESET_DRAFT_MOOD: Final[str] = "wave_preset_draft_mood"
+CONF_WAVE_PRESET_DRAFT_LANGUAGE: Final[str] = "wave_preset_draft_language"
+
+# Dropdown of saved preset names for the delete flow.
+CONF_WAVE_PRESET_TO_DELETE: Final[str] = "wave_preset_to_delete"
+
+# Action button ids.
+CONF_ACTION_SAVE_WAVE_PRESET: Final[str] = "save_wave_preset"
+CONF_ACTION_DELETE_WAVE_PRESET: Final[str] = "delete_wave_preset"
+
+# Allowed per-dimension values (plus "" to mean "use wave default").
+WAVE_PRESET_DIVERSITY_VALUES: Final[tuple[str, ...]] = (
+    "",
+    "discover",
+    "favorite",
+    "popular",
+)
+WAVE_PRESET_MOOD_VALUES: Final[tuple[str, ...]] = (
+    "",
+    "active",
+    "fun",
+    "calm",
+    "sad",
+)
+WAVE_PRESET_LANGUAGE_VALUES: Final[tuple[str, ...]] = (
+    "",
+    "russian",
+    "not-russian",
+    "without-words",
+)
+
+WAVE_MODE_PRESETS: Final[dict[str, dict[str, str]]] = {
+    "discover": {"diversity": "discover"},
+    "favorite": {"diversity": "favorite"},
+    "popular": {"diversity": "popular"},
+    "calm": {"moodEnergy": "calm"},
+    "active": {"moodEnergy": "active"},
+    "fun": {"moodEnergy": "fun"},
+    "sad": {"moodEnergy": "sad"},
+    "russian": {"language": "russian"},
+    "not_russian": {"language": "not-russian"},
+    "without_words": {"language": "without-words"},
+}
+
+# Ordered list of preset keys for Browse display.
+WAVE_MODE_ORDER: Final[tuple[str, ...]] = (
+    "discover",
+    "favorite",
+    "popular",
+    "calm",
+    "active",
+    "fun",
+    "sad",
+    "russian",
+    "not_russian",
+    "without_words",
+)
+
 # Browse folder names by locale (item_id -> display name)
 BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "my_wave": "Мой микс",
@@ -112,6 +245,8 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "albums": "Мои альбомы",
     "tracks": "Мне нравится",
     "playlists": "Мои плейлисты",
+    "audiobooks": "Мои аудиокниги",
+    "podcasts": "Мои подкасты",
     "feed": "Для вас",
     "chart": "Чарт",
     "new_releases": "Новинки",
@@ -179,6 +314,19 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "genre": "Жанры",
     "epoch": "Эпоха",
     "local": "Местное",
+    # Wave-mode folder + presets (P4)
+    "my_wave_modes": "Режимы волны",
+    "my_wave_presets": "Мои пресеты",
+    "wave_mode_discover": "Открытия",
+    "wave_mode_favorite": "Любимое",
+    "wave_mode_popular": "Популярное",
+    "wave_mode_calm": "Спокойнее",
+    "wave_mode_active": "Активнее",
+    "wave_mode_fun": "Весёлое",
+    "wave_mode_sad": "Грустное",
+    "wave_mode_russian": "Русское",
+    "wave_mode_not_russian": "Не русское",  # noqa: RUF001
+    "wave_mode_without_words": "Без слов",
 }
 BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "my_wave": "My Mix",
@@ -186,6 +334,8 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "albums": "My Albums",
     "tracks": "My Favorites",
     "playlists": "My Playlists",
+    "audiobooks": "My Audiobooks",
+    "podcasts": "My Podcasts",
     "feed": "Made for You",
     "chart": "Chart",
     "new_releases": "New Releases",
@@ -253,6 +403,19 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "genre": "Genres",
     "epoch": "Era",
     "local": "Local",
+    # Wave-mode folder + presets (P4)
+    "my_wave_modes": "Wave Modes",
+    "my_wave_presets": "My Presets",
+    "wave_mode_discover": "Discover",
+    "wave_mode_favorite": "Favorites",
+    "wave_mode_popular": "Popular",
+    "wave_mode_calm": "Calm",
+    "wave_mode_active": "Active",
+    "wave_mode_fun": "Fun",
+    "wave_mode_sad": "Sad",
+    "wave_mode_russian": "Russian",
+    "wave_mode_not_russian": "Non-Russian",
+    "wave_mode_without_words": "Without Words",
 }
 
 # Tag categories for Picks and Recommendations

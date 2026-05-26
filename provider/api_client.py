@@ -7,28 +7,31 @@ import base64
 import hashlib
 import hmac
 import logging
+import random
 import re
 import time
+from collections import OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar, cast
 
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
-from yandex_music import Album as KionAlbum
-from yandex_music import Artist as KionArtist
+from yandex_music import Album as YandexAlbum
+from yandex_music import Artist as YandexArtist
 from yandex_music import ClientAsync, MixLink, Search, TrackShort
-from yandex_music import Playlist as KionPlaylist
-from yandex_music import Track as KionTrack
+from yandex_music import Playlist as YandexPlaylist
+from yandex_music import Track as YandexTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, Throttler
 
 if TYPE_CHECKING:
+    from ya_passport_auth import SecretStr
     from yandex_music import DownloadInfo
     from yandex_music.feed.feed import Feed
     from yandex_music.landing.chart_info import ChartInfo
@@ -37,7 +40,24 @@ if TYPE_CHECKING:
     from yandex_music.rotor.dashboard import Dashboard
     from yandex_music.rotor.station_result import StationResult
 
-from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_MIX
+from .constants import (
+    CAPTCHA_COOLDOWN_LADDER_S,
+    CAPTCHA_STRIKE_RETENTION_S,
+    DEFAULT_LIMIT,
+    FILE_INFO_CACHE_MAX,
+    FILE_INFO_CACHE_TTL_S,
+    INITIAL_SYNC_JITTER_S,
+    INITIAL_SYNC_WINDOW_S,
+    LIKED_BATCH_JITTER_MIN_S,
+    LIKED_BATCH_JITTER_SPAN_S,
+    RATE_LIMIT_COOLDOWN_S,
+    THROTTLE_DEFAULT_RPS,
+    THROTTLE_FILE_INFO_RPS,
+    THROTTLE_METADATA_RPS,
+    THROTTLE_ROTOR_RPS,
+)
+
+_CAPTCHA_MARKERS: Final = ("smart-captcha", "captcha_smart_qrcode", "about-429.html")
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (Kion API moved to these formats around 2025)
@@ -51,10 +71,10 @@ _T = TypeVar("_T")
 class KionMusicClient:
     """Wrapper around kion-music-api ClientAsync."""
 
-    def __init__(self, token: str, base_url: str | None = None) -> None:
+    def __init__(self, token: SecretStr, base_url: str | None = None) -> None:
         """Initialize the KION Music client.
 
-        :param token: KION Music OAuth token.
+        :param token: KION Music OAuth token (wrapped in SecretStr).
         :param base_url: Optional API base URL (defaults to KION Music API).
         """
         self._token = token
@@ -63,7 +83,33 @@ class KionMusicClient:
         self._user_id: int | None = None
         self._last_reconnect_at: float = -30.0  # allow first reconnect immediately
         self._reconnect_lock = asyncio.Lock()
-        self._throttler = Throttler(rate_limit=5, period=1.0)
+        # Per-kind throttlers. Kion's smart-captcha quota is per-endpoint-family,
+        # so we keep a separate token bucket per logical class and let one kind
+        # back off independently of the others. `metadata` covers the artist/album
+        # refresh burst MA fires during initial sync (see #146).
+        self._throttlers: dict[str, Throttler] = {
+            "default": Throttler(rate_limit=THROTTLE_DEFAULT_RPS, period=1.0),
+            "metadata": Throttler(rate_limit=THROTTLE_METADATA_RPS, period=1.0),
+            "file_info": Throttler(rate_limit=THROTTLE_FILE_INFO_RPS, period=1.0),
+            "rotor": Throttler(rate_limit=THROTTLE_ROTOR_RPS, period=1.0),
+        }
+        # Per-kind captcha quarantine deadlines (monotonic). Only the explicit
+        # smart-captcha page sets a deadline; plain 429 leaves these at 0.
+        self._block_until: dict[str, float] = dict.fromkeys(self._throttlers, 0.0)
+        # Per-kind captcha strike timestamps (monotonic), trimmed to the
+        # CAPTCHA_STRIKE_RETENTION_S window on every push. Drives the
+        # CAPTCHA_COOLDOWN_LADDER_S escalation.
+        self._captcha_strikes: dict[str, deque[float]] = defaultdict(deque)
+        # Set when connect() succeeds. Drives the initial-sync jitter window.
+        self._connected_at: float | None = None
+        # Short-TTL cache for /get-file-info results, keyed by
+        # (track_id, quality, codecs, transport). Bounded by FILE_INFO_CACHE_MAX (LRU).
+        self._file_info_cache: OrderedDict[
+            tuple[str, str, str, str], tuple[float, dict[str, Any]]
+        ] = OrderedDict()
+
+    def _get_throttler(self, kind: str) -> Throttler:
+        return self._throttlers.get(kind, self._throttlers["default"])
 
     @property
     def user_id(self) -> int:
@@ -79,13 +125,16 @@ class KionMusicClient:
         :raises LoginFailed: If the token is invalid.
         """
         try:
-            self._client = await ClientAsync(self._token, base_url=self._base_url).init()
+            self._client = await ClientAsync(
+                self._token.get_secret(), base_url=self._base_url
+            ).init()
             if self._client.me is None or self._client.me.account is None:
                 raise LoginFailed("Failed to get account info")
             self._user_id = self._client.me.account.uid
+            self._connected_at = time.monotonic()
             LOGGER.debug("Connected to KION Music as user %s", self._user_id)
             return True
-        except (UnauthorizedError, BadRequestError) as err:
+        except UnauthorizedError as err:
             raise LoginFailed("Invalid KION Music token") from err
         except NetworkError as err:
             msg = "Network error connecting to KION Music"
@@ -95,6 +144,7 @@ class KionMusicClient:
         """Disconnect the client."""
         self._client = None
         self._user_id = None
+        self._connected_at = None
 
     async def _ensure_connected(self) -> ClientAsync:
         """Ensure the client is connected, attempting reconnect if needed."""
@@ -120,12 +170,29 @@ class KionMusicClient:
         msg = str(err).lower()
         return "disconnect" in msg or "connection" in msg or "timeout" in msg
 
+    def _classify_429(self, err: Exception) -> Literal["captcha", "rate_limit", "other"]:
+        """Classify a 429-ish error: smart-captcha edge block vs plain rate-limit.
+
+        Kion returns an HTML smart-captcha page when its anti-bot edge layer
+        decides an endpoint family is too hot. That page is per-endpoint, not
+        per-IP, and warrants a longer cooldown than an ordinary 429.
+        """
+        if not isinstance(err, NetworkError):
+            return "other"
+        low = str(err).lower()
+        if not ("429" in low or "too many requests" in low or "rate limit" in low):
+            return "other"
+        return "captcha" if any(m in low for m in _CAPTCHA_MARKERS) else "rate_limit"
+
     def _is_rate_limit_error(self, err: Exception) -> bool:
         """Return True if the exception indicates a rate-limit response from Kion."""
-        if not isinstance(err, NetworkError):
-            return False
-        msg = str(err).lower()
-        return "429" in msg or "too many requests" in msg or "rate limit" in msg
+        return self._classify_429(err) != "other"
+
+    @staticmethod
+    def _truncate_err_msg(err: Exception, limit: int = 200) -> str:
+        """Cap a NetworkError message so the captcha HTML body never lands in logs."""
+        msg = str(err)
+        return msg if len(msg) <= limit else msg[:limit] + "...[truncated]"
 
     async def _reconnect(self) -> None:
         """Disconnect and connect again to recover from Server disconnected / connection errors.
@@ -141,22 +208,155 @@ class KionMusicClient:
             await self.disconnect()
             await self.connect()
 
-    async def _call_with_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
+    def _check_block(self, kind: str) -> None:
+        """Raise immediately if `kind` is under a captcha quarantine.
+
+        BYPASS_THROTTLER callers (stream URL refresh) must skip this check so a
+        currently playing track isn't dropped mid-stream when an unrelated
+        endpoint family trips smart-captcha.
+        """
+        deadline = self._block_until.get(kind, 0.0)
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            raise ResourceTemporarilyUnavailable(
+                f"KION Music {kind} cooldown active",
+                backoff_time=int(remaining) + 1,
+            )
+
+    def _trigger_captcha_block(self, kind: str) -> int:
+        """Quarantine the given throttler kind using the captcha-cooldown ladder.
+
+        Only called when _classify_429 == "captcha". Plain rate-limit responses
+        do NOT trigger this, since Kion's smart-captcha bucket is per
+        endpoint family and we don't want to gate unrelated traffic.
+
+        :param kind: Throttler bucket name (e.g. "default", "metadata").
+        :return: The cooldown duration in seconds (rounded down to int).
+        """
+        now = time.monotonic()
+        strikes = self._captcha_strikes[kind]
+        cutoff = now - CAPTCHA_STRIKE_RETENTION_S
+        while strikes and strikes[0] < cutoff:
+            strikes.popleft()
+        strikes.append(now)
+        ladder = CAPTCHA_COOLDOWN_LADDER_S
+        idx = min(len(strikes), len(ladder)) - 1
+        cooldown = ladder[idx]
+        self._block_until[kind] = max(self._block_until.get(kind, 0.0), now + cooldown)
+        LOGGER.warning(
+            "KION Music %s captcha cooldown engaged: %.0fs (strike %d/%d in last %.0fs)",
+            kind,
+            cooldown,
+            len(strikes),
+            len(ladder),
+            CAPTCHA_STRIKE_RETENTION_S,
+        )
+        return int(cooldown)
+
+    def _maybe_handle_429(self, err: Exception, kind: str) -> ResourceTemporarilyUnavailable | None:
+        """Classify a 429 error and build the user-facing exception.
+
+        Returns the prepared `ResourceTemporarilyUnavailable` to raise, or
+        ``None`` if the error isn't a 429 (caller should re-raise or fall
+        through to connection-error handling). Always truncates the message
+        so the smart-captcha HTML body never lands in logs.
+
+        Side effect: a captcha-classified result engages the per-kind block
+        deadline. Plain 429 leaves block deadlines untouched.
+        """
+        classified = self._classify_429(err)
+        if classified == "captcha":
+            backoff = self._trigger_captcha_block(kind)
+            return ResourceTemporarilyUnavailable(
+                f"KION Music captcha ({kind})",
+                backoff_time=backoff,
+            )
+        if classified == "rate_limit":
+            LOGGER.debug("KION Music plain 429 on kind=%s", kind)
+            return ResourceTemporarilyUnavailable(
+                "KION Music rate limit",
+                backoff_time=int(RATE_LIMIT_COOLDOWN_S),
+            )
+        return None
+
+    def _file_info_cache_get(self, key: tuple[str, str, str, str]) -> dict[str, Any] | None:
+        entry = self._file_info_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            self._file_info_cache.pop(key, None)
+            return None
+        self._file_info_cache.move_to_end(key)
+        return value
+
+    def _file_info_cache_put(self, key: tuple[str, str, str, str], value: dict[str, Any]) -> None:
+        self._file_info_cache[key] = (
+            time.monotonic() + FILE_INFO_CACHE_TTL_S,
+            value,
+        )
+        self._file_info_cache.move_to_end(key)
+        while len(self._file_info_cache) > FILE_INFO_CACHE_MAX:
+            self._file_info_cache.popitem(last=False)
+
+    def _file_info_cache_invalidate(self, track_id: str) -> None:
+        for k in [k for k in self._file_info_cache if k[0] == track_id]:
+            self._file_info_cache.pop(k, None)
+
+    async def _initial_sync_jitter(self, kind: str) -> None:
+        """Sleep a small random delay during the first-sync window.
+
+        Smooths out the parallel metadata-refresh burst MA fires immediately
+        after a fresh install + auth, which is what triggers smart-captcha
+        in #146. After INITIAL_SYNC_WINDOW_S the helper is a no-op — no
+        steady-state overhead.
+
+        Only active for the `default` and `metadata` kinds. `file_info` is
+        on the streaming hot path (latency matters), and `rotor` has its
+        own bucket already tuned for its cadence.
+
+        :param kind: Throttler bucket name.
+        """
+        if kind not in ("default", "metadata"):
+            return
+        connected_at = self._connected_at
+        if connected_at is None:
+            return
+        if time.monotonic() - connected_at >= INITIAL_SYNC_WINDOW_S:
+            return
+        delay = random.uniform(0.0, INITIAL_SYNC_JITTER_S)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    async def _call_with_retry(
+        self,
+        func: Callable[[ClientAsync], Awaitable[_T]],
+        *,
+        kind: str = "default",
+    ) -> _T:
         """Execute an async API call with throttling and one reconnect attempt on connection error.
 
         :param func: Async callable that takes a ClientAsync and returns a result.
+        :param kind: Throttler bucket — one of the keys registered in
+            ``self._throttlers`` ("default", "metadata", "file_info",
+            "rotor"). Falls back to "default" if unknown.
         :return: The result of the API call.
         """
         if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
+            # Fast path: short-circuit before queueing if the kind is already
+            # blocked. Re-check after acquire() — another concurrent request
+            # may have engaged the cooldown while we were queued.
+            self._check_block(kind)
+            await self._initial_sync_jitter(kind)
+            await self._get_throttler(kind).acquire()
+            self._check_block(kind)
         client = await self._ensure_connected()
         try:
             return await func(client)
         except Exception as err:
-            if self._is_rate_limit_error(err):
-                raise ResourceTemporarilyUnavailable(
-                    "KION Music rate limit", backoff_time=60
-                ) from err
+            rate_limit_exc = self._maybe_handle_429(err, kind)
+            if rate_limit_exc is not None:
+                raise rate_limit_exc from NetworkError(self._truncate_err_msg(err))
             if not self._is_connection_error(err):
                 raise
             LOGGER.warning("Connection error, reconnecting and retrying: %s", err)
@@ -165,9 +365,29 @@ class KionMusicClient:
             except Exception as recon_err:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
             client = cast("ClientAsync", self._client)
-            return await func(client)
+            # Re-check the block before the retry: while we were reconnecting,
+            # another concurrent task may have engaged the kind cooldown
+            # (e.g. captcha 429). BYPASS_THROTTLER paths skip this so an
+            # in-flight stream refresh can still attempt the retry.
+            if not BYPASS_THROTTLER.get():
+                self._check_block(kind)
+            # Reconnect-retry must also go through 429 classification —
+            # otherwise a captcha on the retry attempt bypasses the cooldown
+            # logic and propagates the raw HTML body.
+            try:
+                return await func(client)
+            except Exception as retry_err:
+                retry_exc = self._maybe_handle_429(retry_err, kind)
+                if retry_exc is not None:
+                    raise retry_exc from NetworkError(self._truncate_err_msg(retry_err))
+                raise
 
-    async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
+    async def _call_no_retry(
+        self,
+        func: Callable[[ClientAsync], Awaitable[_T]],
+        *,
+        kind: str = "default",
+    ) -> _T:
         """Execute an async API call without reconnect retry on call failure.
 
         Used for fire-and-forget calls (e.g. rotor feedback) where a failed request
@@ -177,12 +397,30 @@ class KionMusicClient:
         path is skipped.
 
         :param func: Async callable that takes a ClientAsync and returns a result.
+        :param kind: Throttler bucket — one of the keys registered in
+            ``self._throttlers`` ("default", "metadata", "file_info",
+            "rotor"). Falls back to "default" if unknown.
         :return: The result of the API call.
         """
         if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
+            # Same dual check as _call_with_retry — see comment there.
+            self._check_block(kind)
+            await self._initial_sync_jitter(kind)
+            await self._get_throttler(kind).acquire()
+            self._check_block(kind)
         client = await self._ensure_connected()
-        return await func(client)
+        try:
+            return await func(client)
+        except Exception as err:
+            # Even on the fire-and-forget path we want to classify 429s: a
+            # captcha hit on rotor feedback must still quarantine the rotor
+            # kind so the rest of the provider stops poking Kion's edge
+            # while it's hot. Truncation also prevents callers' broad
+            # `except NetworkError` from logging multi-KB HTML payloads.
+            rate_limit_exc = self._maybe_handle_429(err, kind)
+            if rate_limit_exc is not None:
+                raise rate_limit_exc from NetworkError(self._truncate_err_msg(err))
+            raise
 
     # Rotor (radio station) methods
 
@@ -190,7 +428,7 @@ class KionMusicClient:
         self,
         station_id: str,
         queue: str | int | None = None,
-    ) -> tuple[list[KionTrack], str | None]:
+    ) -> tuple[list[YandexTrack], str | None]:
         """Get tracks from a rotor station (e.g. user:onyourwave or track:1234).
 
         :param station_id: Station ID (e.g. ROTOR_STATION_MY_MIX or "track:1234" for similar).
@@ -199,7 +437,8 @@ class KionMusicClient:
         """
         try:
             result = await self._call_with_retry(
-                lambda c: c.rotor_station_tracks(station_id, settings2=True, queue=queue)
+                lambda c: c.rotor_station_tracks(station_id, settings2=True, queue=queue),
+                kind="rotor",
             )
         except BadRequestError as err:
             LOGGER.warning("Error fetching rotor station %s tracks: %s", station_id, err)
@@ -227,17 +466,6 @@ class KionMusicClient:
         order_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
         ordered = [order_map[tid] for tid in track_ids if tid in order_map]
         return (ordered, result.batch_id if result else None)
-
-    async def get_my_wave_tracks(
-        self, queue: str | int | None = None
-    ) -> tuple[list[KionTrack], str | None]:
-        """Get tracks from the My Mix radio station.
-
-        :param queue: Optional track ID of the last track from the previous batch (API uses it for
-            pagination; do not pass batch_id).
-        :return: Tuple of (list of track objects, batch_id for feedback).
-        """
-        return await self.get_rotor_station_tracks(ROTOR_STATION_MY_MIX, queue=queue)
 
     async def send_rotor_station_feedback(
         self,
@@ -319,7 +547,7 @@ class KionMusicClient:
             )
 
         try:
-            result = await self._call_no_retry(_send)
+            result = await self._call_no_retry(_send, kind="rotor")
             LOGGER.debug(
                 "Rotor feedback %s track_id=%s total_played_seconds=%s",
                 feedback_type,
@@ -330,8 +558,273 @@ class KionMusicClient:
         except BadRequestError as err:
             LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
+        except ResourceTemporarilyUnavailable as err:
+            # 429/captcha already truncated + block engaged inside _call_no_retry.
+            LOGGER.warning("Rotor feedback %s rate-limited: %s", feedback_type, err)
+            return False
         except (NetworkError, ProviderUnavailableError) as err:
-            LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
+            LOGGER.warning(
+                "Rotor feedback %s failed: %s",
+                feedback_type,
+                self._truncate_err_msg(err),
+            )
+            return False
+
+    # Rotor session API (new session-based endpoints)
+    #
+    # Kion's newer rotor API models a wave as a long-lived session:
+    #   POST /rotor/session/new                     → {radioSessionId, sequence, batchId}
+    #   POST /rotor/session/{sessionId}/tracks      → {sequence, batchId}
+    #   POST /rotor/session/{sessionId}/feedback    → {result: "ok"}
+    # All feedback events carry the same sessionId, so we no longer need to
+    # thread per-batch batch_ids through call sites the way the stations-based
+    # API forced us to.
+
+    async def _rotor_session_request(
+        self, path: str, body: dict[str, Any], *, with_retry: bool = True
+    ) -> dict[str, Any] | None:
+        """POST a JSON body to /rotor/session/{path} and return parsed result.
+
+        Reuses the MarshalX ClientAsync internal request object so we inherit
+        its auth headers and parsing. `json=` is forwarded to `aiohttp.request`
+        by MarshalX's `**kwargs` passthrough.
+
+        :param path: Path suffix after /rotor/session/ (e.g. "new",
+            "{session_id}/tracks", "{session_id}/feedback").
+        :param body: JSON body to send.
+        :param with_retry: When True (default), uses the same reconnect-on-
+            transient-connection-error path as normal data fetches —
+            appropriate for ``new`` and ``tracks`` which sit on the
+            user-facing browse/play path. Set to False for ``feedback``,
+            where a dropped request should be silently lost rather than
+            hammered against a potentially rate-limiting server.
+        :return: Parsed result dict, or None on failure.
+        """
+
+        async def _do(c: ClientAsync) -> dict[str, Any] | None:
+            base = getattr(c, "base_url", "https://api.music.yandex.net")
+            url = f"{base}/rotor/session/{path}"
+            LOGGER.debug("Rotor session POST %s body_keys=%s", path, list(body.keys()))
+            try:
+                result = await c._request.post(url, json=body)
+            except NetworkError as err:
+                # Let the outer retry wrapper see transient drops. On the
+                # no-retry path swallow ordinary network blips silently, but
+                # 429/captcha errors MUST propagate so _call_no_retry can
+                # engage the rotor cooldown — otherwise feedback keeps
+                # hammering Kion during an active edge ban.
+                if with_retry or self._is_rate_limit_error(err):
+                    raise
+                LOGGER.debug("Rotor session POST %s: network error (no retry)", path)
+                return None
+            except BadRequestError as err:
+                # 4xx is terminal — server rejected the body; retry would only
+                # reproduce the same failure.
+                LOGGER.warning("Rotor session POST %s failed: %s", path, err)
+                return None
+            if isinstance(result, dict):
+                LOGGER.debug("Rotor session POST %s → result keys=%s", path, list(result.keys()))
+                return result
+            LOGGER.debug("Rotor session POST %s → non-dict result: %r", path, result)
+            return None
+
+        runner = self._call_with_retry if with_retry else self._call_no_retry
+        try:
+            return await runner(_do, kind="rotor")
+        except UnauthorizedError as err:
+            # Expired/invalidated token. Surface as LoginFailed so MA prompts
+            # for re-auth instead of the raw kion_music exception bubbling
+            # through browse / play and crashing the caller.
+            LOGGER.warning("Rotor session POST %s: token no longer valid", path)
+            raise LoginFailed("Invalid KION Music token") from err
+        except ResourceTemporarilyUnavailable as err:
+            LOGGER.warning("Rotor session POST %s rate-limited: %s", path, err)
+            return None
+        except (NetworkError, ProviderUnavailableError) as err:
+            LOGGER.warning("Rotor session POST %s failed: %s", path, self._truncate_err_msg(err))
+            return None
+
+    async def rotor_session_new(
+        self,
+        station_id: str,
+        *,
+        settings: dict[str, str] | None = None,
+        queue: list[str] | None = None,
+    ) -> tuple[str | None, list[YandexTrack], str | None]:
+        """Create a new rotor session.
+
+        Sends `includeWaveModel: true` so Kion applies its wave ML model and
+        `interactive: true` so the session is treated as foreground user play.
+
+        :param station_id: Station ID (e.g. "user:onyourwave" or "track:123").
+        :param settings: Optional {diversity, moodEnergy, language} — each
+            becomes an additional seed like "settingDiversity:discover".
+        :param queue: Optional initial track IDs in the queue; usually empty.
+        :return: Tuple of (radio_session_id, list of tracks, batch_id).
+            Any element may be None/[] on failure.
+        """
+        seeds: list[str] = [station_id]
+        if settings:
+            for key, seed_name in (
+                ("diversity", "settingDiversity"),
+                ("moodEnergy", "settingMoodEnergy"),
+                ("language", "settingLanguage"),
+            ):
+                val = settings.get(key)
+                if val:
+                    seeds.append(f"{seed_name}:{val}")
+        body: dict[str, Any] = {
+            "seeds": seeds,
+            "queue": queue or [],
+            "includeTracksInResponse": True,
+            "includeWaveModel": True,
+            "interactive": True,
+        }
+        result = await self._rotor_session_request("new", body)
+        if not result:
+            return (None, [], None)
+        session_id = result.get("radioSessionId")
+        batch_id = result.get("batchId")
+        tracks = await self._hydrate_session_tracks(result.get("sequence") or [])
+        return (session_id, tracks, batch_id)
+
+    async def rotor_session_tracks(
+        self, session_id: str, *, current_track_id: str
+    ) -> tuple[list[YandexTrack], str | None]:
+        """Fetch the next batch of tracks for an active rotor session.
+
+        :param session_id: radioSessionId from rotor_session_new().
+        :param current_track_id: Track ID just consumed from the previous batch
+            (Kion uses it to decide what to return next).
+        :return: Tuple of (list of tracks, new batch_id).
+        """
+        body = {"queue": [str(current_track_id)]}
+        result = await self._rotor_session_request(f"{session_id}/tracks", body)
+        if not result:
+            return ([], None)
+        batch_id = result.get("batchId")
+        tracks = await self._hydrate_session_tracks(result.get("sequence") or [])
+        return (tracks, batch_id)
+
+    async def rotor_session_feedback(
+        self,
+        session_id: str,
+        event_type: str,
+        *,
+        track_id: str | None = None,
+        total_played_seconds: int | None = None,
+        batch_id: str | None = None,
+    ) -> bool:
+        """Send a feedback event for an active rotor session.
+
+        Supports the Kion rotor event types: radioStarted, trackStarted,
+        trackFinished, skip, like, dislike. For radioStarted the track_id goes
+        into `event.from`; all other types use `event.trackId`. Only
+        trackFinished and skip carry `totalPlayedSeconds`.
+
+        :param session_id: radioSessionId.
+        :param event_type: rotor event type string.
+        :param track_id: Kion track ID the event refers to (required for
+            everything except radioStarted without a seed).
+        :param total_played_seconds: seconds of the track that were played
+            (only meaningful for trackFinished / skip).
+        :param batch_id: batchId from the most recent rotor_session_{new,tracks}
+            response; anchors the event to a specific batch.
+        :return: True if the POST succeeded.
+        """
+        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        event: dict[str, Any] = {"type": event_type, "timestamp": timestamp}
+        if event_type == "radioStarted":
+            if track_id is not None:
+                event["from"] = str(track_id)
+        elif track_id is not None:
+            event["trackId"] = str(track_id)
+        if event_type in ("trackFinished", "skip") and total_played_seconds is not None:
+            event["totalPlayedSeconds"] = int(total_played_seconds)
+        body: dict[str, Any] = {"event": event}
+        if batch_id:
+            body["batchId"] = batch_id
+        LOGGER.debug(
+            "Rotor session feedback: session=%s event=%s track=%s secs=%s batch=%s",
+            session_id,
+            event_type,
+            track_id,
+            total_played_seconds,
+            batch_id,
+        )
+        result = await self._rotor_session_request(f"{session_id}/feedback", body, with_retry=False)
+        return result is not None
+
+    async def _hydrate_session_tracks(self, sequence: list[dict[str, Any]]) -> list[YandexTrack]:
+        """Extract track IDs from a rotor session sequence and hydrate via get_tracks.
+
+        The session endpoints return tracks inline when includeTracksInResponse
+        is true, but full track objects (with download info, covers, etc.) are
+        fetched separately so parsed Track objects have the same shape as in
+        the rest of the provider.
+
+        :param sequence: List of sequence items from a rotor session response.
+        :return: List of full track objects in the same order as `sequence`.
+        """
+        track_ids: list[str] = []
+        for seq in sequence:
+            tr = seq.get("track") if isinstance(seq, dict) else None
+            tid = None
+            if isinstance(tr, dict):
+                tid = tr.get("id") or tr.get("track_id")
+            if tid is not None:
+                track_ids.append(str(tid))
+        if not track_ids:
+            return []
+        try:
+            full_tracks = await self.get_tracks(track_ids)
+        except ResourceTemporarilyUnavailable as err:
+            LOGGER.warning("Rotor session track hydration failed: %s", err)
+            return []
+        order_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
+        return [order_map[tid] for tid in track_ids if tid in order_map]
+
+    async def play_audio(
+        self,
+        *,
+        track_id: str,
+        album_id: str,
+        play_id: str,
+        track_length_seconds: int,
+        total_played_seconds: int,
+        end_position_seconds: int,
+        from_: str = "music_assistant-audiobook",
+    ) -> bool:
+        """Report playback progress for an audiobook chapter or podcast episode.
+
+        Kion persists this server-side so progress is visible across its
+        other clients. Failures are swallowed — progress sync is advisory and
+        must never abort pause/stop handling — so auth failures, rate-limits
+        and network blips all log at debug and return False.
+        """
+        try:
+            return bool(
+                await self._call_no_retry(
+                    lambda c: c.play_audio(
+                        track_id=track_id,
+                        album_id=album_id,
+                        from_=from_,
+                        play_id=play_id,
+                        track_length_seconds=track_length_seconds,
+                        total_played_seconds=total_played_seconds,
+                        end_position_seconds=end_position_seconds,
+                    )
+                )
+            )
+        except (
+            BadRequestError,
+            NetworkError,
+            ProviderUnavailableError,
+            UnauthorizedError,
+            LoginFailed,
+            ResourceTemporarilyUnavailable,
+        ) as err:
+            LOGGER.debug("play_audio failed for %s: %s", track_id, err)
             return False
 
     # Library methods
@@ -360,7 +853,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching liked tracks: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err
 
-    async def get_liked_albums(self, batch_size: int = 50) -> list[KionAlbum]:
+    async def get_liked_albums(self, batch_size: int = 50) -> list[YandexAlbum]:
         """Get user's liked albums with full details (including cover art).
 
         The users_likes_albums endpoint returns minimal album data without
@@ -385,7 +878,7 @@ class KionMusicClient:
         if not album_ids:
             return []
         # Fetch full album details in batches to get cover_uri and other metadata
-        full_albums: list[KionAlbum] = []
+        full_albums: list[YandexAlbum] = []
         for i in range(0, len(album_ids), batch_size):
             batch = album_ids[i : i + batch_size]
             try:
@@ -401,9 +894,14 @@ class KionMusicClient:
                 for like in result:
                     if like.album is not None and like.album.id and str(like.album.id) in batch_set:
                         full_albums.append(like.album)
+            # Spread bursts: small jittered pause before next batch.
+            if i + batch_size < len(album_ids):
+                await asyncio.sleep(
+                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S
+                )
         return full_albums
 
-    async def get_liked_artists(self) -> list[KionArtist]:
+    async def get_liked_artists(self) -> list[YandexArtist]:
         """Get user's liked artists.
 
         :return: List of liked artist objects.
@@ -420,7 +918,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching liked artists: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked artists") from err
 
-    async def get_user_playlists(self) -> list[KionPlaylist]:
+    async def get_user_playlists(self) -> list[YandexPlaylist]:
         """Get user's playlists.
 
         :return: List of playlist objects.
@@ -437,7 +935,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching playlists: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch playlists") from err
 
-    async def get_liked_playlists(self) -> list[KionPlaylist]:
+    async def get_liked_playlists(self) -> list[YandexPlaylist]:
         """Get user's liked/saved editorial playlists.
 
         :return: List of liked playlist objects.
@@ -486,7 +984,7 @@ class KionMusicClient:
 
     # Get single items
 
-    async def get_track(self, track_id: str) -> KionTrack | None:
+    async def get_track(self, track_id: str) -> YandexTrack | None:
         """Get a single track by ID.
 
         :param track_id: Track ID.
@@ -506,7 +1004,7 @@ class KionMusicClient:
         it's in synced LRC format (with timestamps) or plain text.
 
         Note: This method fetches the track first to check lyrics_available. If you
-        already have the KionTrack object, use get_track_lyrics_from_track() to
+        already have the YandexTrack object, use get_track_lyrics_from_track() to
         avoid a redundant API call.
 
         :param track_id: Track ID.
@@ -527,13 +1025,13 @@ class KionMusicClient:
             LOGGER.debug("Unexpected error fetching lyrics for track %s: %s", track_id, err)
             return None, False
 
-    async def get_track_lyrics_from_track(self, track: KionTrack) -> tuple[str | None, bool]:
+    async def get_track_lyrics_from_track(self, track: YandexTrack) -> tuple[str | None, bool]:
         """Get lyrics for an already-fetched track.
 
-        Avoids the extra tracks([track_id]) API call when the KionTrack object
+        Avoids the extra tracks([track_id]) API call when the YandexTrack object
         is already available.
 
-        :param track: KionTrack object (already fetched).
+        :param track: YandexTrack object (already fetched).
         :return: Tuple of (lyrics_text, is_synced). Returns (None, False) if unavailable.
         """
         track_id = getattr(track, "id", None) or getattr(track, "track_id", "unknown")
@@ -553,7 +1051,7 @@ class KionMusicClient:
 
             # Check if it's LRC format (synced lyrics have timestamps like [00:12.34])
             # Use re.search without ^ so metadata lines like [ar:Artist] don't prevent detection
-            is_synced = bool(re.search(r"\[\d{1,2}:\d{1,2}(?:\.\d{2,3})?\]", lyrics_text))
+            is_synced = bool(re.search(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", lyrics_text))
             return lyrics_text, is_synced
 
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
@@ -564,7 +1062,7 @@ class KionMusicClient:
             LOGGER.debug("Unexpected error fetching lyrics for track %s: %s", track_id, err)
             return None, False
 
-    async def get_tracks(self, track_ids: list[str]) -> list[KionTrack]:
+    async def get_tracks(self, track_ids: list[str]) -> list[YandexTrack]:
         """Get multiple tracks by IDs.
 
         :param track_ids: List of track IDs.
@@ -581,20 +1079,20 @@ class KionMusicClient:
             LOGGER.error("Error fetching tracks (retry failed): %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch tracks") from err
 
-    async def get_album(self, album_id: str) -> KionAlbum | None:
+    async def get_album(self, album_id: str) -> YandexAlbum | None:
         """Get a single album by ID.
 
         :param album_id: Album ID.
         :return: Album object or None if not found.
         """
         try:
-            albums = await self._call_with_retry(lambda c: c.albums([album_id]))
+            albums = await self._call_with_retry(lambda c: c.albums([album_id]), kind="metadata")
             return albums[0] if albums else None
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching album %s: %s", album_id, err)
             return None
 
-    async def get_album_with_tracks(self, album_id: str) -> KionAlbum | None:
+    async def get_album_with_tracks(self, album_id: str) -> YandexAlbum | None:
         """Get an album with its tracks.
 
         Uses the same semantics as the web client: albums/{id}/with-tracks
@@ -607,23 +1105,26 @@ class KionMusicClient:
             return await self._call_with_retry(
                 lambda c: c.albums_with_tracks(
                     album_id,
-                    resumeStream=True,
-                    richTracks=True,
-                    withListeningFinished=True,
-                )
+                    params={
+                        "resumeStream": "true",
+                        "richTracks": "true",
+                        "withListeningFinished": "true",
+                    },
+                ),
+                kind="metadata",
             )
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching album with tracks %s: %s", album_id, err)
             return None
 
-    async def get_artist(self, artist_id: str) -> KionArtist | None:
+    async def get_artist(self, artist_id: str) -> YandexArtist | None:
         """Get a single artist by ID.
 
         :param artist_id: Artist ID.
         :return: Artist object or None if not found.
         """
         try:
-            artists = await self._call_with_retry(lambda c: c.artists([artist_id]))
+            artists = await self._call_with_retry(lambda c: c.artists([artist_id]), kind="metadata")
             return artists[0] if artists else None
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching artist %s: %s", artist_id, err)
@@ -631,7 +1132,7 @@ class KionMusicClient:
 
     async def get_artist_albums(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
-    ) -> list[KionAlbum]:
+    ) -> list[YandexAlbum]:
         """Get artist's albums.
 
         :param artist_id: Artist ID.
@@ -640,7 +1141,8 @@ class KionMusicClient:
         """
         try:
             result = await self._call_with_retry(
-                lambda c: c.artists_direct_albums(artist_id, page=0, page_size=limit)
+                lambda c: c.artists_direct_albums(artist_id, page=0, page_size=limit),
+                kind="metadata",
             )
             if result is None:
                 return []
@@ -678,14 +1180,16 @@ class KionMusicClient:
         :return: ArtistAbout object or None on error/missing.
         """
         try:
-            return await self._call_with_retry(lambda c: c.artists_about(artist_id))
+            return await self._call_with_retry(
+                lambda c: c.artists_about(artist_id), kind="metadata"
+            )
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching artist about %s: %s", artist_id, err)
             return None
 
     async def get_similar_artists(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
-    ) -> list[KionArtist]:
+    ) -> list[YandexArtist]:
         """Get artists similar to the given one.
 
         :param artist_id: Artist ID.
@@ -696,7 +1200,7 @@ class KionMusicClient:
             result = await self._call_with_retry(lambda c: c.artists_similar(artist_id))
             if result is None or not result.similar_artists:
                 return []
-            similar: list[KionArtist] = result.similar_artists
+            similar: list[YandexArtist] = result.similar_artists
             return similar[:limit]
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching similar artists %s: %s", artist_id, err)
@@ -704,7 +1208,7 @@ class KionMusicClient:
 
     async def get_artist_tracks(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
-    ) -> list[KionTrack]:
+    ) -> list[YandexTrack]:
         """Get artist's top tracks.
 
         :param artist_id: Artist ID.
@@ -713,7 +1217,8 @@ class KionMusicClient:
         """
         try:
             result = await self._call_with_retry(
-                lambda c: c.artists_tracks(artist_id, page=0, page_size=limit)
+                lambda c: c.artists_tracks(artist_id, page=0, page_size=limit),
+                kind="metadata",
             )
             if result is None:
                 return []
@@ -722,7 +1227,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching artist tracks %s: %s", artist_id, err)
             return []
 
-    async def get_playlist(self, user_id: str, playlist_id: str) -> KionPlaylist | None:
+    async def get_playlist(self, user_id: str, playlist_id: str) -> YandexPlaylist | None:
         """Get a playlist by ID.
 
         :param user_id: User ID (owner of the playlist).
@@ -764,7 +1269,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
 
-    async def get_track_file_info(
+    async def get_track_file_info(  # noqa: PLR0915
         self,
         track_id: str,
         quality: str = "lossless",
@@ -790,6 +1295,38 @@ class KionMusicClient:
         # Normalize codecs: strip whitespace from each token to prevent HMAC mismatches
         codecs = ",".join(c.strip() for c in codecs.split(",") if c.strip())
 
+        # Short-TTL cache to absorb repeat calls from MA's streaming retry loop.
+        # Bypass when refresh is in progress (BYPASS_THROTTLER): a refresh fires
+        # specifically because the previous URL expired on the CDN side, so the
+        # cached entry is useless.
+        # Include `codecs` in the key: the server may pick a different codec
+        # (and URL) based on the codec preference order, so two calls with the
+        # same (track, quality, transport) but different codec lists must not
+        # share a cache slot.
+        cache_key = (track_id, quality, codecs, transport)
+        if not BYPASS_THROTTLER.get():
+            # Check the file_info circuit-breaker BEFORE the cache lookup —
+            # otherwise a cooldown-period caller could be served a stale URL
+            # from before the block was engaged. Fail fast (return None) so
+            # MA's streaming layer treats the track as unavailable.
+            try:
+                self._check_block("file_info")
+            except ResourceTemporarilyUnavailable as err:
+                LOGGER.debug(
+                    "get-file-info for track %s: file_info cooldown active (%s)",
+                    track_id,
+                    err,
+                )
+                return None
+            cached = self._file_info_cache_get(cache_key)
+            if cached is not None:
+                LOGGER.debug(
+                    "get-file-info for track %s: cache hit (transport=%s)",
+                    track_id,
+                    transport,
+                )
+                return cached
+
         def _build_signed_params(client: ClientAsync) -> tuple[str, dict[str, Any]]:
             """Build URL and signed params using current client and timestamp.
 
@@ -812,17 +1349,16 @@ class KionMusicClient:
                 param_string.encode(),
                 hashlib.sha256,
             )
-            # SHA-256 (32 bytes) → base64 yields 44 chars with one "=" padding char,
-            # but Kion API expects the unpadded form. Use rstrip("=") rather than
-            # a fixed [:-1] slice so unexpected padding never produces a bad sign.
-            params["sign"] = base64.b64encode(hmac_sign.digest()).decode().rstrip("=")
+            # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
+            # Kion API expects exactly 43 chars (one "=" removed).
+            params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
             url = f"{client.base_url}/get-file-info"
             return url, params
 
         def _parse_file_info_result(raw: dict[str, Any] | None) -> dict[str, Any] | None:
             if not raw or not isinstance(raw, dict):
                 return None
-            # yandex-music v3 no longer normalises camelCase keys inside
+            # kion-music v3 no longer normalises camelCase keys inside
             # Response.result, so /get-file-info returns "downloadInfo" as-is.
             download_info = raw.get("download_info") or raw.get("downloadInfo")
             if not download_info or not download_info.get("url"):
@@ -846,7 +1382,7 @@ class KionMusicClient:
             return await c._request.get(url, params=params)  # type: ignore[no-any-return]
 
         try:
-            result = await self._call_with_retry(_do_request)
+            result = await self._call_with_retry(_do_request, kind="file_info")
             parsed = _parse_file_info_result(result)
             if parsed:
                 LOGGER.debug(
@@ -855,8 +1391,26 @@ class KionMusicClient:
                     parsed.get("codec"),
                     transport,
                 )
+                # Always store the freshest URL — including under BYPASS_THROTTLER.
+                # A successful refresh proves the previously cached entry was
+                # stale, so replacing it avoids serving the old URL to the next
+                # non-bypass caller until its TTL expires.
+                self._file_info_cache_put(cache_key, parsed)
                 return parsed
-        except (BadRequestError, NetworkError) as err:
+        except BadRequestError as err:
+            # 4xx is terminal for this URL/quality. Drop any cached entry so we
+            # don't replay a now-rejected response.
+            self._file_info_cache_invalidate(track_id)
+            LOGGER.debug(
+                "get-file-info for track %s: BadRequestError %s",
+                track_id,
+                getattr(err, "message", str(err)) or repr(err),
+            )
+        except (
+            NetworkError,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+        ) as err:
             LOGGER.debug(
                 "get-file-info for track %s: %s %s",
                 track_id,
@@ -864,6 +1418,9 @@ class KionMusicClient:
                 getattr(err, "message", str(err)) or repr(err),
             )
         except UnauthorizedError as err:
+            # Auth expired — invalidate any cached URL so the post-re-auth call
+            # doesn't replay a stale entry tied to the old session.
+            self._file_info_cache_invalidate(track_id)
             LOGGER.debug(
                 "get-file-info for track %s: UnauthorizedError %s",
                 track_id,
@@ -928,7 +1485,7 @@ class KionMusicClient:
             LOGGER.debug("Error fetching new playlists: %s", err)
             return None
 
-    async def get_albums(self, album_ids: list[str]) -> list[KionAlbum]:
+    async def get_albums(self, album_ids: list[str]) -> list[YandexAlbum]:
         """Get multiple albums by IDs.
 
         :param album_ids: List of album IDs.
@@ -941,7 +1498,7 @@ class KionMusicClient:
             LOGGER.debug("Error fetching albums: %s", err)
             return []
 
-    async def get_playlists(self, playlist_ids: list[str]) -> list[KionPlaylist]:
+    async def get_playlists(self, playlist_ids: list[str]) -> list[YandexPlaylist]:
         """Get multiple playlists by IDs (format: 'uid:kind').
 
         :param playlist_ids: List of playlist IDs in 'uid:kind' format.
@@ -954,7 +1511,7 @@ class KionMusicClient:
             LOGGER.debug("Error fetching playlists: %s", err)
             return []
 
-    async def get_tag_playlists(self, tag_id: str) -> list[KionPlaylist]:
+    async def get_tag_playlists(self, tag_id: str) -> list[YandexPlaylist]:
         """Get playlists for a specific tag (mood, era, activity, genre, etc.).
 
         Tags are used for curated collections like 'chill', '80s', 'workout', 'rock', etc.
@@ -1077,7 +1634,8 @@ class KionMusicClient:
         """
         try:
             results: list[StationResult] = await self._call_with_retry(
-                lambda c: c.rotor_stations_list(language)
+                lambda c: c.rotor_stations_list(language),
+                kind="rotor",
             )
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.warning("Error fetching wave stations: %s", err)
@@ -1124,7 +1682,8 @@ class KionMusicClient:
         """
         try:
             dashboard: Dashboard | None = await self._call_with_retry(
-                lambda c: c.rotor_stations_dashboard()
+                lambda c: c.rotor_stations_dashboard(),
+                kind="rotor",
             )
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.warning("Error fetching dashboard stations: %s", err)
