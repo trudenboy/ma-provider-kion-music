@@ -271,3 +271,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: add KION Music (MTS Music) provider
 - fix: fix playlist tracks not loading in UI
 - fix: fix missing album cover art in library
+- Reverse-synced upstream PR #4637 (WIP)

@@ -334,6 +334,7 @@
     'album': None,
     'artists': list([
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 180,
@@ -531,6 +532,7 @@
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 240,
