@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.5] - 2026-07-16
+
+- feat: reverse-port the unported upstream mass-migrations (May 22 – Jun 19, pre-dating the reverse-sync radar): browse/recommendation labels localized via server translations (`strings.json` `media.folder`, replacing the in-code `BROWSE_NAMES_RU/EN` dicts), common-string references (upstream #4327), the unofficial-integration disclaimer entry (upstream #4164), and `RateLimited` for the 429 path (was `ResourceTemporarilyUnavailable`). Provider tree now matches upstream's inlined copy modulo method order.
+
 ## [3.0.4] - 2026-07-16
 
 - refactor(config): move every `ConfigEntry` label/description and all static `ConfigValueOption` titles into `provider/strings.json` (upstream `check_config_entries` compliance); `ConfigValueOption` calls are now value-only, the `base_url` description uses a `{0}` template with `translation_params`.
