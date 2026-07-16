@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.4] - 2026-07-16
 
 - refactor(config): move every `ConfigEntry` label/description and all static `ConfigValueOption` titles into `provider/strings.json` (upstream `check_config_entries` compliance); `ConfigValueOption` calls are now value-only, the `base_url` description uses a `{0}` template with `translation_params`.
 - fix: replace direct `datetime.now()` calls with `music_assistant.helpers.datetime.utc()` (upstream `check_datetime_helpers` compliance).
