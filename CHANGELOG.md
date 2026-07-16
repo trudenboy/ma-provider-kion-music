@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - refactor(config): move every `ConfigEntry` label/description and all static `ConfigValueOption` titles into `provider/strings.json` (upstream `check_config_entries` compliance); `ConfigValueOption` calls are now value-only, the `base_url` description uses a `{0}` template with `translation_params`.
 - fix: replace direct `datetime.now()` calls with `music_assistant.helpers.datetime.utc()` (upstream `check_datetime_helpers` compliance).
 - style: ruff 0.15 safe autofixes matching the upstream dev lint rules.
+- refactor: reorder class methods in `api_client.py` / `provider.py` / `streaming.py` — public methods first, private helpers last (pre-commit `check-method-order` compliance; pure moves, AST-verified no code change).
+- fix(tests): refresh `test_parsers.ambr` snapshots for the current `music_assistant_models` (new `collections`, `description_language`, `proxy_id`, `translation_params` fields; `translation_key: None` no longer serialized).
 
 ## [3.0.3] - 2026-05-09
 
