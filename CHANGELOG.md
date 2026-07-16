@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- refactor(config): move every `ConfigEntry` label/description and all static `ConfigValueOption` titles into `provider/strings.json` (upstream `check_config_entries` compliance); `ConfigValueOption` calls are now value-only, the `base_url` description uses a `{0}` template with `translation_params`.
+- fix: replace direct `datetime.now()` calls with `music_assistant.helpers.datetime.utc()` (upstream `check_datetime_helpers` compliance).
+- style: ruff 0.15 safe autofixes matching the upstream dev lint rules.
+
 ## [3.0.3] - 2026-05-09
 
 - fix(tests/snapshots): refresh `test_parsers.ambr` for the upstream `music_assistant_models` evolution — `Artist.artist_type` (new field, default `singer`) and the new `MediaItemMetadata` fields (`review`, `mood`, `style`, `lyrics`, `lrc_lyrics`, `performers`, `preview`, `popularity`, `release_date`).
