@@ -26,6 +26,7 @@ from yandex_music import Track as KionTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, Throttler
 
 if TYPE_CHECKING:
@@ -52,7 +53,8 @@ class KionMusicClient:
     """Wrapper around kion-music-api ClientAsync."""
 
     def __init__(self, token: str, base_url: str | None = None) -> None:
-        """Initialize the KION Music client.
+        """
+        Initialize the KION Music client.
 
         :param token: KION Music OAuth token.
         :param base_url: Optional API base URL (defaults to KION Music API).
@@ -73,7 +75,8 @@ class KionMusicClient:
         return self._user_id
 
     async def connect(self) -> bool:
-        """Initialize the client and verify token validity.
+        """
+        Initialize the client and verify token validity.
 
         :return: True if connection was successful.
         :raises LoginFailed: If the token is invalid.
@@ -96,102 +99,13 @@ class KionMusicClient:
         self._client = None
         self._user_id = None
 
-    async def _ensure_connected(self) -> ClientAsync:
-        """Ensure the client is connected, attempting reconnect if needed."""
-        if self._client is not None:
-            return self._client
-        async with self._reconnect_lock:
-            # Re-check after acquiring lock — another task may have connected already
-            if self._client is not None:
-                return self._client  # type: ignore[unreachable]
-            LOGGER.info("Client disconnected, attempting to reconnect...")
-            try:
-                await self.connect()
-            except LoginFailed:
-                raise
-            except Exception as err:
-                raise ProviderUnavailableError("Client not connected and reconnect failed") from err
-        return cast("ClientAsync", self._client)
-
-    def _is_connection_error(self, err: Exception) -> bool:
-        """Return True if the exception indicates a connection or server drop."""
-        if isinstance(err, NetworkError) and not self._is_rate_limit_error(err):
-            return True
-        msg = str(err).lower()
-        return "disconnect" in msg or "connection" in msg or "timeout" in msg
-
-    def _is_rate_limit_error(self, err: Exception) -> bool:
-        """Return True if the exception indicates a rate-limit response from Kion."""
-        if not isinstance(err, NetworkError):
-            return False
-        msg = str(err).lower()
-        return "429" in msg or "too many requests" in msg or "rate limit" in msg
-
-    async def _reconnect(self) -> None:
-        """Disconnect and connect again to recover from Server disconnected / connection errors.
-
-        Enforces a 30-second cooldown between reconnect attempts to avoid hammering Kion
-        and triggering rate limiting. A lock ensures concurrent callers don't bypass the cooldown.
-        """
-        async with self._reconnect_lock:
-            now = time.monotonic()
-            if now - self._last_reconnect_at < 30.0:
-                raise ProviderUnavailableError("Reconnect cooldown active, skipping")
-            self._last_reconnect_at = now
-            await self.disconnect()
-            await self.connect()
-
-    async def _call_with_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
-        """Execute an async API call with throttling and one reconnect attempt on connection error.
-
-        :param func: Async callable that takes a ClientAsync and returns a result.
-        :return: The result of the API call.
-        """
-        if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
-        client = await self._ensure_connected()
-        try:
-            return await func(client)
-        except Exception as err:
-            if self._is_rate_limit_error(err):
-                raise ResourceTemporarilyUnavailable(
-                    "KION Music rate limit", backoff_time=60
-                ) from err
-            if not self._is_connection_error(err):
-                raise
-            LOGGER.warning("Connection error, reconnecting and retrying: %s", err)
-            try:
-                await self._reconnect()
-            except Exception as recon_err:
-                raise ProviderUnavailableError("Reconnect failed") from recon_err
-            client = cast("ClientAsync", self._client)
-            return await func(client)
-
-    async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
-        """Execute an async API call without reconnect retry on call failure.
-
-        Used for fire-and-forget calls (e.g. rotor feedback) where a failed request
-        should be silently dropped rather than triggering a reconnect cycle that
-        could cause rate limiting. Note: _ensure_connected() is still called to
-        establish the initial connection if needed; only the reconnect-on-error
-        path is skipped.
-
-        :param func: Async callable that takes a ClientAsync and returns a result.
-        :return: The result of the API call.
-        """
-        if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
-        client = await self._ensure_connected()
-        return await func(client)
-
-    # Rotor (radio station) methods
-
     async def get_rotor_station_tracks(
         self,
         station_id: str,
         queue: str | int | None = None,
     ) -> tuple[list[KionTrack], str | None]:
-        """Get tracks from a rotor station (e.g. user:onyourwave or track:1234).
+        """
+        Get tracks from a rotor station (e.g. user:onyourwave or track:1234).
 
         :param station_id: Station ID (e.g. ROTOR_STATION_MY_MIX or "track:1234" for similar).
         :param queue: Optional track ID for pagination (first track of previous batch).
@@ -231,7 +145,8 @@ class KionMusicClient:
     async def get_my_wave_tracks(
         self, queue: str | int | None = None
     ) -> tuple[list[KionTrack], str | None]:
-        """Get tracks from the My Mix radio station.
+        """
+        Get tracks from the My Mix radio station.
 
         :param queue: Optional track ID of the last track from the previous batch (API uses it for
             pagination; do not pass batch_id).
@@ -248,7 +163,8 @@ class KionMusicClient:
         track_id: str | None = None,
         total_played_seconds: int | None = None,
     ) -> bool:
-        """Send rotor station feedback for My Mix recommendations.
+        """
+        Send rotor station feedback for My Mix recommendations.
 
         Used to report radioStarted, trackStarted, trackFinished, skip so that
         Kion can improve subsequent recommendations.
@@ -260,7 +176,7 @@ class KionMusicClient:
         :param total_played_seconds: Seconds played (for trackFinished, skip).
         :return: True if the request succeeded.
         """
-        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        timestamp = utc().isoformat().replace("+00:00", "Z")
 
         async def _send(c: ClientAsync) -> bool:
             if feedback_type == "radioStarted":
@@ -334,10 +250,9 @@ class KionMusicClient:
             LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
 
-    # Library methods
-
     async def get_liked_tracks(self) -> list[TrackShort]:
-        """Get user's liked tracks sorted by timestamp (most recent first).
+        """
+        Get user's liked tracks sorted by timestamp (most recent first).
 
         :return: List of liked track objects sorted in reverse chronological order.
         """
@@ -361,7 +276,8 @@ class KionMusicClient:
             raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err
 
     async def get_liked_albums(self, batch_size: int = 50) -> list[KionAlbum]:
-        """Get user's liked albums with full details (including cover art).
+        """
+        Get user's liked albums with full details (including cover art).
 
         The users_likes_albums endpoint returns minimal album data without
         cover_uri, so we fetch full album details in batches afterwards.
@@ -404,7 +320,8 @@ class KionMusicClient:
         return full_albums
 
     async def get_liked_artists(self) -> list[KionArtist]:
-        """Get user's liked artists.
+        """
+        Get user's liked artists.
 
         :return: List of liked artist objects.
         """
@@ -421,7 +338,8 @@ class KionMusicClient:
             raise ResourceTemporarilyUnavailable("Failed to fetch liked artists") from err
 
     async def get_user_playlists(self) -> list[KionPlaylist]:
-        """Get user's playlists.
+        """
+        Get user's playlists.
 
         :return: List of playlist objects.
         """
@@ -438,7 +356,8 @@ class KionMusicClient:
             raise ResourceTemporarilyUnavailable("Failed to fetch playlists") from err
 
     async def get_liked_playlists(self) -> list[KionPlaylist]:
-        """Get user's liked/saved editorial playlists.
+        """
+        Get user's liked/saved editorial playlists.
 
         :return: List of liked playlist objects.
         """
@@ -458,15 +377,14 @@ class KionMusicClient:
             LOGGER.error("Error fetching liked playlists: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked playlists") from err
 
-    # Search
-
     async def search(
         self,
         query: str,
         search_type: str = "all",
         limit: int = DEFAULT_LIMIT,
     ) -> Search | None:
-        """Search for tracks, albums, artists, or playlists.
+        """
+        Search for tracks, albums, artists, or playlists.
 
         :param query: Search query string.
         :param search_type: Type of search ('all', 'track', 'album', 'artist', 'playlist').
@@ -484,10 +402,9 @@ class KionMusicClient:
             LOGGER.error("Search error: %s", err)
             raise ResourceTemporarilyUnavailable("Search failed") from err
 
-    # Get single items
-
     async def get_track(self, track_id: str) -> KionTrack | None:
-        """Get a single track by ID.
+        """
+        Get a single track by ID.
 
         :param track_id: Track ID.
         :return: Track object or None if not found.
@@ -500,7 +417,8 @@ class KionMusicClient:
             return None
 
     async def get_track_lyrics(self, track_id: str) -> tuple[str | None, bool]:
-        """Get lyrics for a track.
+        """
+        Get lyrics for a track.
 
         Fetches lyrics from KION Music API. Returns the lyrics text and whether
         it's in synced LRC format (with timestamps) or plain text.
@@ -528,7 +446,8 @@ class KionMusicClient:
             return None, False
 
     async def get_track_lyrics_from_track(self, track: KionTrack) -> tuple[str | None, bool]:
-        """Get lyrics for an already-fetched track.
+        """
+        Get lyrics for an already-fetched track.
 
         Avoids the extra tracks([track_id]) API call when the KionTrack object
         is already available.
@@ -565,7 +484,8 @@ class KionMusicClient:
             return None, False
 
     async def get_tracks(self, track_ids: list[str]) -> list[KionTrack]:
-        """Get multiple tracks by IDs.
+        """
+        Get multiple tracks by IDs.
 
         :param track_ids: List of track IDs.
         :return: List of track objects.
@@ -582,7 +502,8 @@ class KionMusicClient:
             raise ResourceTemporarilyUnavailable("Failed to fetch tracks") from err
 
     async def get_album(self, album_id: str) -> KionAlbum | None:
-        """Get a single album by ID.
+        """
+        Get a single album by ID.
 
         :param album_id: Album ID.
         :return: Album object or None if not found.
@@ -595,7 +516,8 @@ class KionMusicClient:
             return None
 
     async def get_album_with_tracks(self, album_id: str) -> KionAlbum | None:
-        """Get an album with its tracks.
+        """
+        Get an album with its tracks.
 
         Uses the same semantics as the web client: albums/{id}/with-tracks
         with resumeStream, richTracks, withListeningFinished.
@@ -617,7 +539,8 @@ class KionMusicClient:
             return None
 
     async def get_artist(self, artist_id: str) -> KionArtist | None:
-        """Get a single artist by ID.
+        """
+        Get a single artist by ID.
 
         :param artist_id: Artist ID.
         :return: Artist object or None if not found.
@@ -632,7 +555,8 @@ class KionMusicClient:
     async def get_artist_albums(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
     ) -> list[KionAlbum]:
-        """Get artist's albums.
+        """
+        Get artist's albums.
 
         :param artist_id: Artist ID.
         :param limit: Maximum number of albums.
@@ -650,7 +574,8 @@ class KionMusicClient:
             return []
 
     async def get_pins(self) -> Any | None:
-        """Get the user's pinned items (artists/albums/playlists/waves).
+        """
+        Get the user's pinned items (artists/albums/playlists/waves).
 
         :return: PinsList object or None on error.
         """
@@ -661,7 +586,8 @@ class KionMusicClient:
             return None
 
     async def get_music_history(self) -> Any | None:
-        """Get the user's listening history (grouped by day).
+        """
+        Get the user's listening history (grouped by day).
 
         :return: MusicHistory object or None on error.
         """
@@ -672,7 +598,8 @@ class KionMusicClient:
             return None
 
     async def get_artist_about(self, artist_id: str) -> Any | None:
-        """Get artist enrichment info: description, monthly listeners, links.
+        """
+        Get artist enrichment info: description, monthly listeners, links.
 
         :param artist_id: Artist ID.
         :return: ArtistAbout object or None on error/missing.
@@ -686,7 +613,8 @@ class KionMusicClient:
     async def get_similar_artists(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
     ) -> list[KionArtist]:
-        """Get artists similar to the given one.
+        """
+        Get artists similar to the given one.
 
         :param artist_id: Artist ID.
         :param limit: Maximum number of artists.
@@ -705,7 +633,8 @@ class KionMusicClient:
     async def get_artist_tracks(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
     ) -> list[KionTrack]:
-        """Get artist's top tracks.
+        """
+        Get artist's top tracks.
 
         :param artist_id: Artist ID.
         :param limit: Maximum number of tracks.
@@ -723,7 +652,8 @@ class KionMusicClient:
             return []
 
     async def get_playlist(self, user_id: str, playlist_id: str) -> KionPlaylist | None:
-        """Get a playlist by ID.
+        """
+        Get a playlist by ID.
 
         :param user_id: User ID (owner of the playlist).
         :param playlist_id: Playlist ID (kind).
@@ -744,12 +674,11 @@ class KionMusicClient:
             LOGGER.warning("Network error fetching playlist %s/%s: %s", user_id, playlist_id, err)
             raise ResourceTemporarilyUnavailable("Failed to fetch playlist") from err
 
-    # Streaming
-
     async def get_track_download_info(
         self, track_id: str, get_direct_links: bool = True
     ) -> list[DownloadInfo]:
-        """Get download info for a track.
+        """
+        Get download info for a track.
 
         :param track_id: Track ID.
         :param get_direct_links: Whether to get direct download links.
@@ -771,7 +700,8 @@ class KionMusicClient:
         codecs: str = GET_FILE_INFO_CODECS,
         transport: str = "raw",
     ) -> dict[str, Any] | None:
-        """Request stream via get-file-info for any quality tier.
+        """
+        Request stream via get-file-info for any quality tier.
 
         The /get-file-info endpoint supports all quality tiers (lossless, nq, lq)
         and returns the best available codec based on the codecs parameter order.
@@ -791,7 +721,8 @@ class KionMusicClient:
         codecs = ",".join(c.strip() for c in codecs.split(",") if c.strip())
 
         def _build_signed_params(client: ClientAsync) -> tuple[str, dict[str, Any]]:
-            """Build URL and signed params using current client and timestamp.
+            """
+            Build URL and signed params using current client and timestamp.
 
             Called on each attempt by _call_with_retry, so the HMAC signature
             is recomputed with a fresh timestamp on every retry.
@@ -881,10 +812,9 @@ class KionMusicClient:
 
         return None
 
-    # Discovery / recommendations
-
     async def get_feed(self) -> Feed | None:
-        """Get personalized feed with generated playlists (Playlist of the Day, etc.).
+        """
+        Get personalized feed with generated playlists (Playlist of the Day, etc.).
 
         :return: Feed object with generated_playlists, or None on error.
         """
@@ -895,7 +825,8 @@ class KionMusicClient:
             return None
 
     async def get_chart(self, chart_option: str = "") -> ChartInfo | None:
-        """Get chart data.
+        """
+        Get chart data.
 
         :param chart_option: Optional chart variant (e.g. 'world', 'russia').
         :return: ChartInfo object or None on error.
@@ -907,7 +838,8 @@ class KionMusicClient:
             return None
 
     async def get_new_releases(self) -> LandingList | None:
-        """Get new album releases.
+        """
+        Get new album releases.
 
         :return: LandingList with new_releases (list of album IDs) or None on error.
         """
@@ -918,7 +850,8 @@ class KionMusicClient:
             return None
 
     async def get_new_playlists(self) -> LandingList | None:
-        """Get new editorial playlists.
+        """
+        Get new editorial playlists.
 
         :return: LandingList with new_playlists (list of PlaylistId) or None on error.
         """
@@ -929,7 +862,8 @@ class KionMusicClient:
             return None
 
     async def get_albums(self, album_ids: list[str]) -> list[KionAlbum]:
-        """Get multiple albums by IDs.
+        """
+        Get multiple albums by IDs.
 
         :param album_ids: List of album IDs.
         :return: List of album objects.
@@ -942,7 +876,8 @@ class KionMusicClient:
             return []
 
     async def get_playlists(self, playlist_ids: list[str]) -> list[KionPlaylist]:
-        """Get multiple playlists by IDs (format: 'uid:kind').
+        """
+        Get multiple playlists by IDs (format: 'uid:kind').
 
         :param playlist_ids: List of playlist IDs in 'uid:kind' format.
         :return: List of playlist objects.
@@ -955,7 +890,8 @@ class KionMusicClient:
             return []
 
     async def get_tag_playlists(self, tag_id: str) -> list[KionPlaylist]:
-        """Get playlists for a specific tag (mood, era, activity, genre, etc.).
+        """
+        Get playlists for a specific tag (mood, era, activity, genre, etc.).
 
         Tags are used for curated collections like 'chill', '80s', 'workout', 'rock', etc.
         The API returns playlist IDs which are then fetched in full.
@@ -982,7 +918,8 @@ class KionMusicClient:
             return []
 
     async def get_landing_tags(self) -> list[tuple[str, str]]:
-        """Discover available tag slugs from the landing mixes block.
+        """
+        Discover available tag slugs from the landing mixes block.
 
         Uses the landing("mixes") API which returns MixLink entities
         containing tag URLs (e.g., /tag/chill/) and display titles.
@@ -1014,7 +951,8 @@ class KionMusicClient:
         return tags
 
     async def get_mixes_waves(self) -> list[dict[str, Any]] | None:
-        """Get AI Wave Set stations from /landing-blocks/mixes-waves endpoint.
+        """
+        Get AI Wave Set stations from /landing-blocks/mixes-waves endpoint.
 
         Returns structured mix data with categories and station items, each
         containing station_id, title, seeds, and visual metadata.
@@ -1024,7 +962,8 @@ class KionMusicClient:
         return await self._get_landing_waves("mixes-waves")
 
     async def get_waves_landing(self) -> list[dict[str, Any]] | None:
-        """Get featured wave stations from /landing-blocks/waves endpoint.
+        """
+        Get featured wave stations from /landing-blocks/waves endpoint.
 
         Returns Kion-curated wave categories with station items — the "Волны"
         landing page content, separate from the full rotor/stations/list and from
@@ -1034,39 +973,11 @@ class KionMusicClient:
         """
         return await self._get_landing_waves("waves")
 
-    async def _get_landing_waves(self, block: str) -> list[dict[str, Any]] | None:
-        """Fetch wave categories from a /landing-blocks/<block> endpoint.
-
-        Note: Response keys are auto-converted from camelCase to snake_case
-        by the kion-music library's JSON parser.
-
-        :param block: Block name, e.g. 'waves' or 'mixes-waves'.
-        :return: List of wave category dicts, or None on error.
-        """
-
-        async def _get(c: ClientAsync) -> dict[str, Any]:
-            url = f"{c.base_url}/landing-blocks/{block}"
-            return await c._request.get(url)  # type: ignore[no-any-return]
-
-        try:
-            result = await self._call_with_retry(_get)
-            if result and isinstance(result, dict):
-                waves = result.get("waves", [])
-                LOGGER.debug(
-                    "landing-blocks/%s returned %d categories",
-                    block,
-                    len(waves) if isinstance(waves, list) else -1,
-                )
-                return waves if isinstance(waves, list) else []
-            return None
-        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
-            LOGGER.debug("Error fetching landing-blocks/%s: %s", block, err)
-            return None
-
     async def get_wave_stations(
         self, language: str | None = None
     ) -> list[tuple[str, str, str, str | None]]:
-        """Get available rotor wave stations grouped by category.
+        """
+        Get available rotor wave stations grouped by category.
 
         Calls rotor_stations_list() — equivalent to the rotor/stations/list API endpoint.
         Filters out personal stations (type 'user') since My Mix is handled separately.
@@ -1114,7 +1025,8 @@ class KionMusicClient:
         return stations
 
     async def get_dashboard_stations(self) -> list[tuple[str, str, str | None]]:
-        """Get personalized recommended stations for the current user.
+        """
+        Get personalized recommended stations for the current user.
 
         Calls rotor_stations_dashboard() — returns user-specific stations based
         on listening history, unlike rotor_stations_list() which is non-personalized.
@@ -1158,10 +1070,9 @@ class KionMusicClient:
             stations.append((station_id, name, image_url))
         return stations
 
-    # Library modifications
-
     async def like_track(self, track_id: str) -> bool:
-        """Add a track to liked tracks.
+        """
+        Add a track to liked tracks.
 
         :param track_id: Track ID to like.
         :return: True if successful.
@@ -1174,7 +1085,8 @@ class KionMusicClient:
             return False
 
     async def unlike_track(self, track_id: str) -> bool:
-        """Remove a track from liked tracks.
+        """
+        Remove a track from liked tracks.
 
         :param track_id: Track ID to unlike.
         :return: True if successful.
@@ -1187,7 +1099,8 @@ class KionMusicClient:
             return False
 
     async def like_album(self, album_id: str) -> bool:
-        """Add an album to liked albums.
+        """
+        Add an album to liked albums.
 
         :param album_id: Album ID to like.
         :return: True if successful.
@@ -1200,7 +1113,8 @@ class KionMusicClient:
             return False
 
     async def unlike_album(self, album_id: str) -> bool:
-        """Remove an album from liked albums.
+        """
+        Remove an album from liked albums.
 
         :param album_id: Album ID to unlike.
         :return: True if successful.
@@ -1213,7 +1127,8 @@ class KionMusicClient:
             return False
 
     async def like_artist(self, artist_id: str) -> bool:
-        """Add an artist to liked artists.
+        """
+        Add an artist to liked artists.
 
         :param artist_id: Artist ID to like.
         :return: True if successful.
@@ -1226,7 +1141,8 @@ class KionMusicClient:
             return False
 
     async def unlike_artist(self, artist_id: str) -> bool:
-        """Remove an artist from liked artists.
+        """
+        Remove an artist from liked artists.
 
         :param artist_id: Artist ID to unlike.
         :return: True if successful.
@@ -1237,3 +1153,124 @@ class KionMusicClient:
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error unliking artist %s: %s", artist_id, err)
             return False
+
+    async def _ensure_connected(self) -> ClientAsync:
+        """Ensure the client is connected, attempting reconnect if needed."""
+        if self._client is not None:
+            return self._client
+        async with self._reconnect_lock:
+            # Re-check after acquiring lock — another task may have connected already
+            if self._client is not None:
+                return self._client  # type: ignore[unreachable]
+            LOGGER.info("Client disconnected, attempting to reconnect...")
+            try:
+                await self.connect()
+            except LoginFailed:
+                raise
+            except Exception as err:
+                raise ProviderUnavailableError("Client not connected and reconnect failed") from err
+        return cast("ClientAsync", self._client)
+
+    def _is_connection_error(self, err: Exception) -> bool:
+        """Return True if the exception indicates a connection or server drop."""
+        if isinstance(err, NetworkError) and not self._is_rate_limit_error(err):
+            return True
+        msg = str(err).lower()
+        return "disconnect" in msg or "connection" in msg or "timeout" in msg
+
+    def _is_rate_limit_error(self, err: Exception) -> bool:
+        """Return True if the exception indicates a rate-limit response from Kion."""
+        if not isinstance(err, NetworkError):
+            return False
+        msg = str(err).lower()
+        return "429" in msg or "too many requests" in msg or "rate limit" in msg
+
+    async def _reconnect(self) -> None:
+        """
+        Disconnect and connect again to recover from Server disconnected / connection errors.
+
+        Enforces a 30-second cooldown between reconnect attempts to avoid hammering Kion
+        and triggering rate limiting. A lock ensures concurrent callers don't bypass the cooldown.
+        """
+        async with self._reconnect_lock:
+            now = time.monotonic()
+            if now - self._last_reconnect_at < 30.0:
+                raise ProviderUnavailableError("Reconnect cooldown active, skipping")
+            self._last_reconnect_at = now
+            await self.disconnect()
+            await self.connect()
+
+    async def _call_with_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
+        """
+        Execute an async API call with throttling and one reconnect attempt on connection error.
+
+        :param func: Async callable that takes a ClientAsync and returns a result.
+        :return: The result of the API call.
+        """
+        if not BYPASS_THROTTLER.get():
+            await self._throttler.acquire()
+        client = await self._ensure_connected()
+        try:
+            return await func(client)
+        except Exception as err:
+            if self._is_rate_limit_error(err):
+                raise ResourceTemporarilyUnavailable(
+                    "KION Music rate limit", backoff_time=60
+                ) from err
+            if not self._is_connection_error(err):
+                raise
+            LOGGER.warning("Connection error, reconnecting and retrying: %s", err)
+            try:
+                await self._reconnect()
+            except Exception as recon_err:
+                raise ProviderUnavailableError("Reconnect failed") from recon_err
+            client = cast("ClientAsync", self._client)
+            return await func(client)
+
+    async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
+        """
+        Execute an async API call without reconnect retry on call failure.
+
+        Used for fire-and-forget calls (e.g. rotor feedback) where a failed request
+        should be silently dropped rather than triggering a reconnect cycle that
+        could cause rate limiting. Note: _ensure_connected() is still called to
+        establish the initial connection if needed; only the reconnect-on-error
+        path is skipped.
+
+        :param func: Async callable that takes a ClientAsync and returns a result.
+        :return: The result of the API call.
+        """
+        if not BYPASS_THROTTLER.get():
+            await self._throttler.acquire()
+        client = await self._ensure_connected()
+        return await func(client)
+
+    async def _get_landing_waves(self, block: str) -> list[dict[str, Any]] | None:
+        """
+        Fetch wave categories from a /landing-blocks/<block> endpoint.
+
+        Note: Response keys are auto-converted from camelCase to snake_case
+        by the kion-music library's JSON parser.
+
+        :param block: Block name, e.g. 'waves' or 'mixes-waves'.
+        :return: List of wave category dicts, or None on error.
+        """
+
+        async def _get(c: ClientAsync) -> dict[str, Any]:
+            url = f"{c.base_url}/landing-blocks/{block}"
+            return await c._request.get(url)  # type: ignore[no-any-return]
+
+        try:
+            result = await self._call_with_retry(_get)
+            if result and isinstance(result, dict):
+                waves = result.get("waves", [])
+                LOGGER.debug(
+                    "landing-blocks/%s returned %d categories",
+                    block,
+                    len(waves) if isinstance(waves, list) else -1,
+                )
+                return waves if isinstance(waves, list) else []
+            return None
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching landing-blocks/%s: %s", block, err)
+            return None

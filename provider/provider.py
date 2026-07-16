@@ -6,7 +6,6 @@ import asyncio
 import logging
 import random
 from collections.abc import AsyncGenerator, Coroutine, Sequence
-from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +34,7 @@ from music_assistant_models.media_items import (
 from PIL import Image as PilImage
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import KionMusicClient
@@ -94,7 +94,8 @@ if TYPE_CHECKING:
 
 
 def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
-    """Extract track_id and optional station_id from provider item_id.
+    """
+    Extract track_id and optional station_id from provider item_id.
 
     My Mix tracks use item_id format 'track_id@station_id'. Other tracks use
     plain track_id.
@@ -147,17 +148,6 @@ class KionMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
 
-    def _get_browse_names(self) -> dict[str, str]:
-        """Get locale-based browse folder names."""
-        try:
-            locale = (self.mass.metadata.locale or "en_US").lower()
-            use_russian = locale.startswith("ru")
-            self.logger.debug("Locale detection: locale=%s, use_russian=%s", locale, use_russian)
-        except Exception as err:
-            self.logger.debug("Locale detection failed: %s", err)
-            use_russian = False
-        return BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         token = self.config.get_value(CONF_TOKEN)
@@ -179,7 +169,8 @@ class KionMusicProvider(MusicProvider):
         self.logger.info("Successfully connected to KION Music")
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider.
+        """
+        Handle unload/close of the provider.
 
         :param is_removed: Whether the provider is being removed.
         """
@@ -190,7 +181,8 @@ class KionMusicProvider(MusicProvider):
         await super().unload(is_removed)
 
     def get_item_mapping(self, media_type: MediaType | str, key: str, name: str) -> ItemMapping:
-        """Create a generic item mapping.
+        """
+        Create a generic item mapping.
 
         :param media_type: The media type.
         :param key: The item ID.
@@ -207,7 +199,8 @@ class KionMusicProvider(MusicProvider):
         )
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with locale-based folder names.
+        """
+        Browse provider items with locale-based folder names.
 
         Root level shows My Mix (personalised radio), For You (picks & mixes),
         Collection (liked tracks/albums/artists/playlists), Radio (rotor stations
@@ -387,10 +380,701 @@ class KionMusicProvider(MusicProvider):
             return await self.browse(folders[0].path)
         return folders
 
+    @use_cache(3600 * 24 * 14)
+    async def search(
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
+    ) -> SearchResults:
+        """
+        Perform search on KION Music.
+
+        :param search_query: The search query.
+        :param media_types: List of media types to search for.
+        :param limit: Maximum number of results per type.
+        :return: SearchResults with found items.
+        """
+        result = SearchResults()
+
+        # Determine search type based on requested media types
+        # Map MediaType to Kion API search type
+        type_mapping = {
+            MediaType.TRACK: "track",
+            MediaType.ALBUM: "album",
+            MediaType.ARTIST: "artist",
+            MediaType.PLAYLIST: "playlist",
+        }
+        requested_types = [type_mapping[mt] for mt in media_types if mt in type_mapping]
+
+        # Use specific type if only one requested, otherwise search all
+        search_type = requested_types[0] if len(requested_types) == 1 else "all"
+
+        search_result = await self.client.search(search_query, search_type=search_type, limit=limit)
+        if not search_result:
+            return result
+
+        # Parse tracks
+        if MediaType.TRACK in media_types and search_result.tracks:
+            for track in search_result.tracks.results[:limit]:
+                try:
+                    result.tracks = [*result.tracks, parse_track(self, track)]
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing track: %s", err)
+
+        # Parse albums
+        if MediaType.ALBUM in media_types and search_result.albums:
+            for album in search_result.albums.results[:limit]:
+                try:
+                    result.albums = [*result.albums, parse_album(self, album)]
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing album: %s", err)
+
+        # Parse artists
+        if MediaType.ARTIST in media_types and search_result.artists:
+            for artist in search_result.artists.results[:limit]:
+                try:
+                    result.artists = [*result.artists, parse_artist(self, artist)]
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing artist: %s", err)
+
+        # Parse playlists
+        if MediaType.PLAYLIST in media_types and search_result.playlists:
+            for playlist in search_result.playlists.results[:limit]:
+                try:
+                    result.playlists = [*result.playlists, parse_playlist(self, playlist)]
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing playlist: %s", err)
+
+        return result
+
+    @use_cache(3600 * 24 * 30)
+    async def get_artist(self, prov_artist_id: str) -> Artist:
+        """
+        Get artist details by ID, enriched with description and listener stats.
+
+        :param prov_artist_id: The provider artist ID.
+        :return: Artist object.
+        :raises MediaNotFoundError: If artist not found.
+        """
+        artist, about = await asyncio.gather(
+            self.client.get_artist(prov_artist_id),
+            self.client.get_artist_about(prov_artist_id),
+        )
+        if not artist:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
+        return parse_artist(self, artist, about=about)
+
+    @use_cache(3600 * 24 * 30)
+    async def get_album(self, prov_album_id: str) -> Album:
+        """
+        Get album details by ID.
+
+        :param prov_album_id: The provider album ID.
+        :return: Album object.
+        :raises MediaNotFoundError: If album not found.
+        """
+        album = await self.client.get_album(prov_album_id)
+        if not album:
+            raise MediaNotFoundError(f"Album {prov_album_id} not found")
+        return parse_album(self, album)
+
+    async def get_track(self, prov_track_id: str) -> Track:
+        """
+        Get track details by ID.
+
+        Supports composite item_id (track_id@station_id) for My Mix tracks;
+        only the track_id part is used for the API. Normalizes the ID before
+        caching to avoid duplicate cache entries.
+
+        :param prov_track_id: The provider track ID (or track_id@station_id).
+        :return: Track object.
+        :raises MediaNotFoundError: If track not found.
+        """
+        track_id, _ = _parse_radio_item_id(prov_track_id)
+        return await self._get_track_cached(track_id)
+
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """
+        Get playlist details by ID.
+
+        Supports virtual playlists MY_WAVE_PLAYLIST_ID (My Mix) and
+        LIKED_TRACKS_PLAYLIST_ID (Liked Tracks). Real playlists use format "owner_id:kind".
+
+        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind",
+            my_wave, or liked_tracks).
+        :return: Playlist object.
+        :raises MediaNotFoundError: If playlist not found.
+        """
+        # Virtual playlists - not cached (locale-dependent names)
+        if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
+            names = self._get_browse_names()
+            return Playlist(
+                item_id=MY_WAVE_PLAYLIST_ID,
+                provider=self.instance_id,
+                name=names[MY_WAVE_PLAYLIST_ID],
+                owner=get_canonical_provider_name(self),
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=MY_WAVE_PLAYLIST_ID,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        is_unique=True,
+                    )
+                },
+                is_editable=False,
+            )
+
+        if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
+            names = self._get_browse_names()
+            return Playlist(
+                item_id=LIKED_TRACKS_PLAYLIST_ID,
+                provider=self.instance_id,
+                name=names[LIKED_TRACKS_PLAYLIST_ID],
+                owner=get_canonical_provider_name(self),
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=LIKED_TRACKS_PLAYLIST_ID,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        is_unique=True,
+                    )
+                },
+                is_editable=False,
+            )
+
+        # Real playlists - use cached method
+        return await self._get_real_playlist(prov_playlist_id)
+
+    @use_cache(3600 * 24 * 30)
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """
+        Get album tracks.
+
+        :param prov_album_id: The provider album ID.
+        :return: List of Track objects.
+        """
+        album = await self.client.get_album_with_tracks(prov_album_id)
+        if not album or not album.volumes:
+            return []
+
+        tracks = []
+        for volume_index, volume in enumerate(album.volumes):
+            for track_index, track in enumerate(volume):
+                try:
+                    parsed_track = parse_track(self, track)
+                    parsed_track.disc_number = volume_index + 1
+                    parsed_track.track_number = track_index + 1
+                    tracks.append(parsed_track)
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing album track: %s", err)
+        return tracks
+
+    @use_cache(3600 * 3)
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """
+        Get similar tracks using Kion Rotor station for this track.
+
+        Uses rotor station track:{id} so MA radio mode gets Kion recommendations.
+
+        :param prov_track_id: Provider track ID (plain or track_id@station_id).
+        :param limit: Maximum number of tracks to return.
+        :return: List of similar Track objects.
+        """
+        track_id, _ = _parse_radio_item_id(prov_track_id)
+        station_id = f"track:{track_id}"
+        raw_tracks, _ = await self.client.get_rotor_station_tracks(station_id, queue=None)
+        tracks = []
+        for yt in raw_tracks[:limit]:
+            try:
+                tracks.append(parse_track(self, yt))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing similar track: %s", err)
+        return tracks
+
+    @use_cache(3600 * 3)
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """
+        Get artists similar to the given one via Kion artists/similar endpoint.
+
+        :param prov_artist_id: Provider artist ID.
+        :param limit: Maximum number of artists to return.
+        :return: List of similar Artist objects.
+        """
+        raw_artists = await self.client.get_similar_artists(prov_artist_id, limit=limit)
+        artists: list[Artist] = []
+        for ya in raw_artists:
+            try:
+                artists.append(parse_artist(self, ya))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing similar artist: %s", err)
+        return artists
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get recommendations with multiple discovery folders.
+
+        Returns My Mix, Feed (Made for You), Chart, New Releases, and
+        New Playlists sections.
+
+        :return: List of recommendation folders.
+        """
+        folders: list[RecommendationFolder] = []
+
+        folder = await self._get_my_wave_recommendations()
+        if folder:
+            folders.append(folder)
+
+        folder = await self._get_feed_recommendations()
+        if folder:
+            folders.append(folder)
+
+        folder = await self._get_chart_recommendations()
+        if folder:
+            folders.append(folder)
+
+        folder = await self._get_new_releases_recommendations()
+        if folder:
+            folders.append(folder)
+
+        folder = await self._get_new_playlists_recommendations()
+        if folder:
+            folders.append(folder)
+
+        # Picks & Mixes recommendations
+        folder = await self._get_top_picks_recommendations()
+        if folder:
+            folders.append(folder)
+
+        # Mood mix: select tag outside cache so rotation actually works
+        mood_tag = await self._pick_random_tag_for_category("mood")
+        if mood_tag:
+            folder = await self._get_mood_mix_recommendations(mood_tag)
+            if folder:
+                folders.append(folder)
+
+        # Activity mix: select tag outside cache so rotation actually works
+        activity_tag = await self._pick_random_tag_for_category("activity")
+        if activity_tag:
+            folder = await self._get_activity_mix_recommendations(activity_tag)
+            if folder:
+                folders.append(folder)
+
+        folder = await self._get_seasonal_mix_recommendations()
+        if folder:
+            folders.append(folder)
+
+        return folders
+
+    @use_cache(3600 * 3)
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """
+        Get playlist tracks.
+
+        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind",
+            my_wave, or liked_tracks).
+        :param page: Page number for pagination.
+        :return: List of Track objects.
+        """
+        self.logger.debug(
+            "get_playlist_tracks called: prov_playlist_id=%s, page=%s", prov_playlist_id, page
+        )
+
+        if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
+            self.logger.debug("Fetching My Mix tracks")
+            return await self._get_my_wave_playlist_tracks(page)
+
+        if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
+            self.logger.debug("Fetching Liked Tracks for virtual playlist")
+            result = await self._get_liked_tracks_playlist_tracks(page)
+            self.logger.debug("Liked Tracks playlist returned %s tracks", len(result))
+            return result
+
+        # KION Music API returns all playlist tracks in one call (no server-side pagination).
+        # Return empty list for page > 0 so the controller pagination loop terminates.
+        if page > 0:
+            return []
+
+        # Parse the playlist ID (format: owner_id:kind)
+        if PLAYLIST_ID_SPLITTER in prov_playlist_id:
+            owner_id, kind = prov_playlist_id.split(PLAYLIST_ID_SPLITTER, 1)
+        else:
+            owner_id = str(self.client.user_id)
+            kind = prov_playlist_id
+
+        playlist = await self.client.get_playlist(owner_id, kind)
+        if not playlist:
+            return []
+
+        # API sometimes returns playlist without tracks; fetch them explicitly if needed
+        tracks_list = playlist.tracks or []
+        track_count = getattr(playlist, "track_count", None) or 0
+        if not tracks_list and track_count > 0:
+            self.logger.debug(
+                "Playlist %s/%s: track_count=%s but no tracks in response, "
+                "calling fetch_tracks_async",
+                owner_id,
+                kind,
+                track_count,
+            )
+            try:
+                tracks_list = await playlist.fetch_tracks_async()
+            except Exception as err:
+                self.logger.warning("fetch_tracks_async failed for %s/%s: %s", owner_id, kind, err)
+            if not tracks_list:
+                raise ResourceTemporarilyUnavailable(
+                    "Playlist tracks not available; try again later"
+                )
+
+        if not tracks_list:
+            return []
+
+        # Kion returns TrackShort objects, we need to fetch full track info
+        track_ids = [
+            str(track.track_id) if hasattr(track, "track_id") else str(track.id)
+            for track in tracks_list
+            if track
+        ]
+        if not track_ids:
+            return []
+
+        # Fetch full track details in batches to avoid timeouts
+        batch_size = TRACK_BATCH_SIZE
+        full_tracks = []
+        for i in range(0, len(track_ids), batch_size):
+            batch = track_ids[i : i + batch_size]
+            batch_result = await self.client.get_tracks(batch)
+            if not batch_result:
+                self.logger.warning(
+                    "Received empty result for playlist %s tracks batch %s-%s",
+                    prov_playlist_id,
+                    i,
+                    i + len(batch) - 1,
+                )
+                raise ResourceTemporarilyUnavailable(
+                    "Playlist tracks not fully available; try again later"
+                )
+            full_tracks.extend(batch_result)
+
+        if track_ids and not full_tracks:
+            raise ResourceTemporarilyUnavailable("Failed to load track details; try again later")
+
+        tracks = []
+        for track in full_tracks:
+            try:
+                tracks.append(parse_track(self, track))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing playlist track: %s", err)
+        return tracks
+
+    @use_cache(3600 * 24 * 7)
+    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
+        """
+        Get artist's albums.
+
+        :param prov_artist_id: The provider artist ID.
+        :return: List of Album objects.
+        """
+        albums = await self.client.get_artist_albums(prov_artist_id)
+        result = []
+        for album in albums:
+            try:
+                result.append(parse_album(self, album))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing artist album: %s", err)
+        return result
+
+    @use_cache(3600 * 24 * 7)
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """
+        Get artist's top tracks.
+
+        :param prov_artist_id: The provider artist ID.
+        :return: List of Track objects.
+        """
+        tracks = await self.client.get_artist_tracks(prov_artist_id)
+        result = []
+        for track in tracks:
+            try:
+                result.append(parse_track(self, track))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing artist track: %s", err)
+        return result
+
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
+        """Retrieve library artists from KION Music."""
+        artists = await self.client.get_liked_artists()
+        for artist in artists:
+            try:
+                yield parse_artist(self, artist)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library artist: %s", err)
+
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
+        """Retrieve library albums from KION Music."""
+        batch_size = TRACK_BATCH_SIZE
+        albums = await self.client.get_liked_albums(batch_size=batch_size)
+        for album in albums:
+            try:
+                yield parse_album(self, album)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library album: %s", err)
+
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
+        """Retrieve library tracks from KION Music."""
+        track_shorts = await self.client.get_liked_tracks()
+        if not track_shorts:
+            return
+
+        # Fetch full track details in batches
+        track_ids = [str(ts.track_id) for ts in track_shorts if ts.track_id]
+        batch_size = TRACK_BATCH_SIZE
+        for i in range(0, len(track_ids), batch_size):
+            batch_ids = track_ids[i : i + batch_size]
+            full_tracks = await self.client.get_tracks(batch_ids)
+            for track in full_tracks:
+                try:
+                    yield parse_track(self, track)
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing library track: %s", err)
+
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
+        """
+        Retrieve library playlists from KION Music.
+
+        Includes virtual playlists (My Mix and Liked Tracks if enabled), user-created playlists,
+        and user-liked editorial playlists (returned by a separate API endpoint).
+        """
+        yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
+        yield await self.get_playlist(LIKED_TRACKS_PLAYLIST_ID)
+        seen_ids: set[str] = set()
+        # User-created playlists
+        playlists = await self.client.get_user_playlists()
+        for playlist in playlists:
+            try:
+                parsed = parse_playlist(self, playlist)
+                seen_ids.add(parsed.item_id)
+                yield parsed
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library playlist: %s", err)
+        # User-liked editorial playlists (not in users_playlists_list)
+        liked_playlists = await self.client.get_liked_playlists()
+        for playlist in liked_playlists:
+            try:
+                parsed = parse_playlist(self, playlist)
+                if parsed.item_id not in seen_ids:
+                    yield parsed
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing liked playlist: %s", err)
+
+    async def library_add(self, item: MediaItemType) -> bool:
+        """
+        Add item to library.
+
+        :param item: The media item to add.
+        :return: True if successful.
+        """
+        prov_item_id = self._get_provider_item_id(item)
+        if not prov_item_id:
+            return False
+        track_id, _ = _parse_radio_item_id(prov_item_id)
+
+        if item.media_type == MediaType.TRACK:
+            return await self.client.like_track(track_id)
+        if item.media_type == MediaType.ALBUM:
+            return await self.client.like_album(prov_item_id)
+        if item.media_type == MediaType.ARTIST:
+            return await self.client.like_artist(prov_item_id)
+        return False
+
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """
+        Remove item from library.
+
+        :param prov_item_id: The provider item ID (may be track_id@station_id for tracks).
+        :param media_type: The media type.
+        :return: True if successful.
+        """
+        track_id, _ = _parse_radio_item_id(prov_item_id)
+        if media_type == MediaType.TRACK:
+            return await self.client.unlike_track(track_id)
+        if media_type == MediaType.ALBUM:
+            return await self.client.unlike_album(prov_item_id)
+        if media_type == MediaType.ARTIST:
+            return await self.client.unlike_artist(prov_item_id)
+        return False
+
+    async def get_stream_details(
+        self, item_id: str, media_type: MediaType = MediaType.TRACK
+    ) -> StreamDetails:
+        """
+        Get stream details for a track.
+
+        :param item_id: The track ID (or track_id@station_id for My Mix).
+        :param media_type: The media type (should be TRACK).
+        :return: StreamDetails for the track.
+        """
+        return await self.streaming.get_stream_details(item_id)
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """
+        Return the audio stream for the provider item.
+
+        Uses windowed Range-request streaming to prevent Kion CDN drops.
+        Handles both raw (direct) and encrypted (encraw) transports.
+
+        :param streamdetails: Stream details with URL and optional decryption key.
+        :param seek_position: Seek position in seconds (handled by provider for raw transport).
+        :return: Async generator yielding audio chunks.
+        """
+        async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
+            yield chunk
+
+    async def get_rotor_station_tracks(
+        self, station_id: str, queue: str | int | None = None
+    ) -> tuple[list[Any], str | None]:
+        """
+        Fetch tracks from a rotor station (My Mix, similar, etc.).
+
+        Wrapper around client.get_rotor_station_tracks for use by ynison plugin.
+        """
+        return await self.client.get_rotor_station_tracks(station_id, queue=queue)
+
+    def get_quality(self) -> str:
+        """
+        Return the configured audio quality tier (e.g. 'balanced', 'superb').
+
+        Mirrors the legacy-value normalization used by the streaming layer:
+        older configs store the lossless tier as ``"lossless"``, while the
+        current canonical value is ``QUALITY_LOSSLESS`` (``"superb"``).
+        External callers (e.g. the ynison plugin wrapper) see the same
+        normalized value the streaming code would resolve to.
+        """
+        quality = str(self.config.get_value(CONF_QUALITY) or "").strip().lower()
+        if quality == "lossless":
+            quality = QUALITY_LOSSLESS
+        return quality
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """
+        Resolve wave cover image with background color fill for transparent PNGs.
+
+        If the image URL has an associated background color (stored in _wave_bg_colors),
+        downloads the PNG from Kion CDN and composites it on a solid color background
+        using Pillow, returning JPEG bytes. Falls back to the original URL on any error.
+
+        :param path: Image URL (may include #rrggbb fragment used as cache key).
+        :return: Composited JPEG bytes, or original path string as fallback.
+        """
+        bg_color = self._wave_bg_colors.get(path)
+        if not bg_color:
+            return path
+
+        # Strip the #color fragment before fetching the actual image
+        fetch_url = path.split("#", maxsplit=1)[0] if "#" in path else path
+        try:
+            async with self.mass.http_session.get(fetch_url) as resp:
+                resp.raise_for_status()
+                raw = await resp.read()
+        except Exception as err:
+            self.logger.debug("Failed to fetch wave cover %s: %s", fetch_url, err)
+            return fetch_url
+
+        def _composite() -> bytes:
+            bg_clean = bg_color.lstrip("#")
+            try:
+                r = int(bg_clean[0:2], 16)
+                g = int(bg_clean[2:4], 16)
+                b = int(bg_clean[4:6], 16)
+            except ValueError, IndexError:
+                return raw
+            fg = PilImage.open(BytesIO(raw)).convert("RGBA")
+            bg = PilImage.new("RGBA", fg.size, (r, g, b, 255))
+            bg.paste(fg, mask=fg)
+            out = BytesIO()
+            bg.convert("RGB").save(out, "JPEG", quality=92)
+            return out.getvalue()
+
+        try:
+            return await asyncio.to_thread(_composite)
+        except Exception as err:
+            self.logger.debug("Wave cover composite failed for %s: %s", fetch_url, err)
+            return fetch_url
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """
+        Report playback for rotor feedback when the track is from My Mix.
+
+        Sends trackStarted when the track is currently playing (is_playing=True).
+        trackFinished/skip are sent from on_streamed to use accurate seconds_streamed.
+        """
+        if media_type != MediaType.TRACK:
+            return
+        track_id, station_id = _parse_radio_item_id(prov_item_id)
+        if not station_id:
+            return
+        if is_playing:
+            if station_id == ROTOR_STATION_MY_MIX:
+                batch_id = self._my_wave_batch_id
+            else:
+                state = self._wave_states.get(station_id)
+                batch_id = state.batch_id if state else None
+            await self.client.send_rotor_station_feedback(
+                station_id,
+                "trackStarted",
+                track_id=track_id,
+                batch_id=batch_id,
+            )
+
+    async def on_streamed(self, streamdetails: StreamDetails) -> None:
+        """
+        Report stream completion for My Mix rotor feedback.
+
+        Sends trackFinished or skip with actual seconds_streamed so Kion
+        can improve recommendations.
+        """
+        track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
+        if not station_id:
+            return
+        seconds = int(streamdetails.seconds_streamed or 0)
+        duration = streamdetails.duration or 0
+        feedback_type = "trackFinished" if duration and seconds >= max(0, duration - 10) else "skip"
+        if station_id == ROTOR_STATION_MY_MIX:
+            batch_id = self._my_wave_batch_id
+        else:
+            state = self._wave_states.get(station_id)
+            batch_id = state.batch_id if state else None
+        await self.client.send_rotor_station_feedback(
+            station_id,
+            feedback_type,
+            track_id=track_id,
+            total_played_seconds=seconds,
+            batch_id=batch_id,
+        )
+
+    def _get_browse_names(self) -> dict[str, str]:
+        """Get locale-based browse folder names."""
+        try:
+            locale = (self.mass.metadata.locale or "en_US").lower()
+            use_russian = locale.startswith("ru")
+            self.logger.debug("Locale detection: locale=%s, use_russian=%s", locale, use_russian)
+        except Exception as err:
+            self.logger.debug("Locale detection failed: %s", err)
+            use_russian = False
+        return BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
+
     async def _browse_my_wave(
         self, path: str, sub_subpath: str | None
     ) -> list[Track | BrowseFolder]:
-        """Browse My Mix tracks (must be called under _my_wave_lock).
+        """
+        Browse My Mix tracks (must be called under _my_wave_lock).
 
         :param path: Full browse path.
         :param sub_subpath: Sub-path part ('next' for load more, or track_id cursor).
@@ -486,7 +1170,8 @@ class KionMusicProvider(MusicProvider):
         return all_tracks
 
     def _parse_my_wave_track(self, yt: Any, seen_ids: set[str]) -> Track | None:
-        """Parse a Kion track into a My Mix Track with composite item_id.
+        """
+        Parse a Kion track into a My Mix Track with composite item_id.
 
         Extracts the track_id, checks for duplicates in the seen_ids set,
         sets composite item_id (track_id@station_id), and updates provider_mappings.
@@ -520,7 +1205,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _validate_tag(self, tag_slug: str) -> bool:
-        """Check if a tag has playlists by calling client.get_tag_playlists().
+        """
+        Check if a tag has playlists by calling client.get_tag_playlists().
 
         :param tag_slug: Tag identifier (e.g. 'chill', '80s').
         :return: True if the tag has at least one playlist.
@@ -534,7 +1220,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_valid_tags_for_category(self, category: str) -> list[str]:
-        """Get validated tags for a category (only those with playlists).
+        """
+        Get validated tags for a category (only those with playlists).
 
         Combines hardcoded tags from the category lists with any landing-discovered
         tags, validates each by calling client.tags(), and returns only those with
@@ -573,7 +1260,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_discovered_tags(self, locale: str) -> list[tuple[str, str]]:
-        """Get all available tags by combining hardcoded tags with landing discovery.
+        """
+        Get all available tags by combining hardcoded tags with landing discovery.
 
         Starts with all hardcoded tags from category lists, adds landing-discovered
         tags, validates each via client.tags(), and returns only those with playlists.
@@ -614,7 +1302,8 @@ class KionMusicProvider(MusicProvider):
         ]
 
     async def _get_discovered_tag_slugs(self) -> set[str]:
-        """Get set of all valid tag slugs (cached).
+        """
+        Get set of all valid tag slugs (cached).
 
         :return: Set of tag slug strings that have playlists.
         """
@@ -624,7 +1313,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_for_you(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse «For You» folder — shows Picks and Mixes sub-folders.
+        """
+        Browse «For You» folder — shows Picks and Mixes sub-folders.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -660,7 +1350,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_collection(
         self, path: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse «Collection» folder — shows library sub-folders (tracks/artists/albums/playlists).
+        """
+        Browse «Collection» folder — shows library sub-folders (tracks/artists/albums/playlists).
 
         :param path: Full browse path.
         :return: List of library sub-folders.
@@ -713,7 +1404,8 @@ class KionMusicProvider(MusicProvider):
         return folders
 
     async def _browse_pins(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse user's pinned items (artists/albums/playlists from Kion Pins).
+        """
+        Browse user's pinned items (artists/albums/playlists from Kion Pins).
 
         Resolves each pin to its full media item via existing single-item lookups.
         Wave pins are skipped — MA has no native concept for them.
@@ -765,7 +1457,8 @@ class KionMusicProvider(MusicProvider):
         return items
 
     async def _browse_history(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse user's recent listening history (flattened across days).
+        """
+        Browse user's recent listening history (flattened across days).
 
         Filters to ``type == "track"`` entries only — album/playlist context
         items in the history feed are dropped. Tracks are de-duplicated by
@@ -803,7 +1496,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_picks(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse picks folder using hardcoded tags validated against the API.
+        """
+        Browse picks folder using hardcoded tags validated against the API.
 
         Tags are sourced from hardcoded category lists and landing API discovery,
         then validated via client.tags() to ensure they have playlists.
@@ -903,7 +1597,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_mixes(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse mixes folder (seasonal collections) using hardcoded tags.
+        """
+        Browse mixes folder (seasonal collections) using hardcoded tags.
 
         Uses TAG_MIXES directly and validates each tag via client.tags()
         to check if it has playlists. Does not depend on landing API discovery.
@@ -948,7 +1643,8 @@ class KionMusicProvider(MusicProvider):
         return []
 
     def _get_wave_state(self, station_id: str) -> _WaveState:
-        """Get or create per-station wave state.
+        """
+        Get or create per-station wave state.
 
         :param station_id: Rotor station ID (e.g. 'genre:rock', 'mood:chill').
         :return: _WaveState instance for this station.
@@ -958,7 +1654,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_waves(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse waves folder (rotor stations by genre/mood/activity/epoch/local).
+        """
+        Browse waves folder (rotor stations by genre/mood/activity/epoch/local).
 
         Fetches available stations from the Kion rotor API and groups them by category.
 
@@ -1091,14 +1788,16 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(600)
     async def _get_dashboard_stations_cached(self) -> list[tuple[str, str, str | None]]:
-        """Get personalized dashboard stations, cached for 10 minutes.
+        """
+        Get personalized dashboard stations, cached for 10 minutes.
 
         :return: List of (station_id, name, image_url) tuples.
         """
         return await self.client.get_dashboard_stations()
 
     async def _browse_my_waves_stations(self, path: str) -> list[BrowseFolder]:
-        """Browse personalized wave stations from rotor/stations/dashboard.
+        """
+        Browse personalized wave stations from rotor/stations/dashboard.
 
         Names are resolved from the non-personalized station list so that
         stations show their actual genre/mood name (e.g. "Рок") rather than
@@ -1145,7 +1844,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_wave_station(
         self, station_id: str, path: str = ""
     ) -> list[Track | BrowseFolder]:
-        """Browse a rotor wave station and return tracks.
+        """
+        Browse a rotor wave station and return tracks.
 
         Fetches tracks from the rotor station, deduplicates within the current session,
         and sends radioStarted feedback on first call. Appends a "Load more" BrowseFolder
@@ -1239,7 +1939,8 @@ class KionMusicProvider(MusicProvider):
 
     @staticmethod
     def _extract_wave_item_cover(item: dict[str, Any]) -> tuple[str | None, str | None]:
-        """Extract cover URI and background color from a wave/mix item.
+        """
+        Extract cover URI and background color from a wave/mix item.
 
         :param item: Wave or mix item dict from the API.
         :return: (cover_uri, bg_color) tuple where bg_color is a hex string or None.
@@ -1251,7 +1952,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_mixes_waves_cached(self) -> list[dict[str, Any]] | None:
-        """Get AI Wave Set data from /landing-blocks/mixes-waves, cached for 1 hour.
+        """
+        Get AI Wave Set data from /landing-blocks/mixes-waves, cached for 1 hour.
 
         :return: List of mix category dicts from the API, or None on error.
         """
@@ -1259,7 +1961,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_waves_landing_cached(self) -> list[dict[str, Any]] | None:
-        """Get Featured Mixes data from /landing-blocks/waves, cached for 1 hour.
+        """
+        Get Featured Mixes data from /landing-blocks/waves, cached for 1 hour.
 
         :return: List of wave category dicts from the API, or None on error.
         """
@@ -1268,7 +1971,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_waves_landing(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Featured Mixes (from /landing-blocks/waves).
+        """
+        Browse Featured Mixes (from /landing-blocks/waves).
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -1286,7 +1990,8 @@ class KionMusicProvider(MusicProvider):
         categories_data: list[dict[str, Any]],
         id_prefix: str,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse wave-like category folders and their station items.
+        """
+        Browse wave-like category folders and their station items.
 
         Shared logic for both 'my_waves_set' browse trees:
         - Level 1 (e.g. my_waves_set/): category folders
@@ -1383,7 +2088,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_vibe_sets(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse AI Mix Sets (from /landing-blocks/mixes-waves).
+        """
+        Browse AI Mix Sets (from /landing-blocks/mixes-waves).
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -1398,7 +2104,8 @@ class KionMusicProvider(MusicProvider):
     async def _get_tag_playlists_as_browse(
         self, tag_id: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Get playlists for a tag and return as browse items.
+        """
+        Get playlists for a tag and return as browse items.
 
         :param tag_id: Tag identifier (e.g. 'chill', '80s').
         :return: List of Playlist objects.
@@ -1415,120 +2122,10 @@ class KionMusicProvider(MusicProvider):
         self.logger.debug("Parsed %d playlists for tag %s", len(result), tag_id)
         return result
 
-    # Search
-
-    @use_cache(3600 * 24 * 14)
-    async def search(
-        self, search_query: str, media_types: list[MediaType], limit: int = 5
-    ) -> SearchResults:
-        """Perform search on KION Music.
-
-        :param search_query: The search query.
-        :param media_types: List of media types to search for.
-        :param limit: Maximum number of results per type.
-        :return: SearchResults with found items.
-        """
-        result = SearchResults()
-
-        # Determine search type based on requested media types
-        # Map MediaType to Kion API search type
-        type_mapping = {
-            MediaType.TRACK: "track",
-            MediaType.ALBUM: "album",
-            MediaType.ARTIST: "artist",
-            MediaType.PLAYLIST: "playlist",
-        }
-        requested_types = [type_mapping[mt] for mt in media_types if mt in type_mapping]
-
-        # Use specific type if only one requested, otherwise search all
-        search_type = requested_types[0] if len(requested_types) == 1 else "all"
-
-        search_result = await self.client.search(search_query, search_type=search_type, limit=limit)
-        if not search_result:
-            return result
-
-        # Parse tracks
-        if MediaType.TRACK in media_types and search_result.tracks:
-            for track in search_result.tracks.results[:limit]:
-                try:
-                    result.tracks = [*result.tracks, parse_track(self, track)]
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing track: %s", err)
-
-        # Parse albums
-        if MediaType.ALBUM in media_types and search_result.albums:
-            for album in search_result.albums.results[:limit]:
-                try:
-                    result.albums = [*result.albums, parse_album(self, album)]
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing album: %s", err)
-
-        # Parse artists
-        if MediaType.ARTIST in media_types and search_result.artists:
-            for artist in search_result.artists.results[:limit]:
-                try:
-                    result.artists = [*result.artists, parse_artist(self, artist)]
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing artist: %s", err)
-
-        # Parse playlists
-        if MediaType.PLAYLIST in media_types and search_result.playlists:
-            for playlist in search_result.playlists.results[:limit]:
-                try:
-                    result.playlists = [*result.playlists, parse_playlist(self, playlist)]
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing playlist: %s", err)
-
-        return result
-
-    # Get single items
-
-    @use_cache(3600 * 24 * 30)
-    async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Get artist details by ID, enriched with description and listener stats.
-
-        :param prov_artist_id: The provider artist ID.
-        :return: Artist object.
-        :raises MediaNotFoundError: If artist not found.
-        """
-        artist, about = await asyncio.gather(
-            self.client.get_artist(prov_artist_id),
-            self.client.get_artist_about(prov_artist_id),
-        )
-        if not artist:
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
-        return parse_artist(self, artist, about=about)
-
-    @use_cache(3600 * 24 * 30)
-    async def get_album(self, prov_album_id: str) -> Album:
-        """Get album details by ID.
-
-        :param prov_album_id: The provider album ID.
-        :return: Album object.
-        :raises MediaNotFoundError: If album not found.
-        """
-        album = await self.client.get_album(prov_album_id)
-        if not album:
-            raise MediaNotFoundError(f"Album {prov_album_id} not found")
-        return parse_album(self, album)
-
-    async def get_track(self, prov_track_id: str) -> Track:
-        """Get track details by ID.
-
-        Supports composite item_id (track_id@station_id) for My Mix tracks;
-        only the track_id part is used for the API. Normalizes the ID before
-        caching to avoid duplicate cache entries.
-
-        :param prov_track_id: The provider track ID (or track_id@station_id).
-        :return: Track object.
-        :raises MediaNotFoundError: If track not found.
-        """
-        track_id, _ = _parse_radio_item_id(prov_track_id)
-        return await self._get_track_cached(track_id)
-
     @use_cache(3600 * 24 * 30)
     async def _get_track_cached(self, track_id: str) -> Track:
-        """Get track details by normalized ID (cached).
+        """
+        Get track details by normalized ID (cached).
 
         :param track_id: Normalized track ID (without station suffix).
         :return: Track object.
@@ -1543,60 +2140,10 @@ class KionMusicProvider(MusicProvider):
 
         return parse_track(self, raw_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
 
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get playlist details by ID.
-
-        Supports virtual playlists MY_WAVE_PLAYLIST_ID (My Mix) and
-        LIKED_TRACKS_PLAYLIST_ID (Liked Tracks). Real playlists use format "owner_id:kind".
-
-        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind",
-            my_wave, or liked_tracks).
-        :return: Playlist object.
-        :raises MediaNotFoundError: If playlist not found.
-        """
-        # Virtual playlists - not cached (locale-dependent names)
-        if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
-            names = self._get_browse_names()
-            return Playlist(
-                item_id=MY_WAVE_PLAYLIST_ID,
-                provider=self.instance_id,
-                name=names[MY_WAVE_PLAYLIST_ID],
-                owner=get_canonical_provider_name(self),
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=MY_WAVE_PLAYLIST_ID,
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                        is_unique=True,
-                    )
-                },
-                is_editable=False,
-            )
-
-        if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
-            names = self._get_browse_names()
-            return Playlist(
-                item_id=LIKED_TRACKS_PLAYLIST_ID,
-                provider=self.instance_id,
-                name=names[LIKED_TRACKS_PLAYLIST_ID],
-                owner=get_canonical_provider_name(self),
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=LIKED_TRACKS_PLAYLIST_ID,
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                        is_unique=True,
-                    )
-                },
-                is_editable=False,
-            )
-
-        # Real playlists - use cached method
-        return await self._get_real_playlist(prov_playlist_id)
-
     @use_cache(3600 * 24 * 30)
     async def _get_real_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get real playlist details by ID (cached).
+        """
+        Get real playlist details by ID (cached).
 
         :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
         :return: Playlist object.
@@ -1615,7 +2162,8 @@ class KionMusicProvider(MusicProvider):
         return parse_playlist(self, playlist)
 
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
-        """Get My Mix tracks for virtual playlist (uncached; uses cursor for page > 0).
+        """
+        Get My Mix tracks for virtual playlist (uncached; uses cursor for page > 0).
 
         Fetches MY_WAVE_BATCH_SIZE Rotor API batches per page call to reduce
         the number of round-trips when the player controller paginates through pages.
@@ -1691,7 +2239,8 @@ class KionMusicProvider(MusicProvider):
             return tracks
 
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
-        """Get liked tracks for virtual playlist (sorted in reverse chronological order).
+        """
+        Get liked tracks for virtual playlist (sorted in reverse chronological order).
 
         :param page: Page number (0 = all tracks limited by config, >0 = empty for pagination).
         :return: List of Track objects.
@@ -1744,127 +2293,10 @@ class KionMusicProvider(MusicProvider):
         self.logger.debug("Liked tracks: fetched %s, parsed %s", len(track_shorts), len(tracks))
         return tracks
 
-    # Get related items
-
-    @use_cache(3600 * 24 * 30)
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Get album tracks.
-
-        :param prov_album_id: The provider album ID.
-        :return: List of Track objects.
-        """
-        album = await self.client.get_album_with_tracks(prov_album_id)
-        if not album or not album.volumes:
-            return []
-
-        tracks = []
-        for volume_index, volume in enumerate(album.volumes):
-            for track_index, track in enumerate(volume):
-                try:
-                    parsed_track = parse_track(self, track)
-                    parsed_track.disc_number = volume_index + 1
-                    parsed_track.track_number = track_index + 1
-                    tracks.append(parsed_track)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing album track: %s", err)
-        return tracks
-
-    @use_cache(3600 * 3)
-    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Get similar tracks using Kion Rotor station for this track.
-
-        Uses rotor station track:{id} so MA radio mode gets Kion recommendations.
-
-        :param prov_track_id: Provider track ID (plain or track_id@station_id).
-        :param limit: Maximum number of tracks to return.
-        :return: List of similar Track objects.
-        """
-        track_id, _ = _parse_radio_item_id(prov_track_id)
-        station_id = f"track:{track_id}"
-        raw_tracks, _ = await self.client.get_rotor_station_tracks(station_id, queue=None)
-        tracks = []
-        for yt in raw_tracks[:limit]:
-            try:
-                tracks.append(parse_track(self, yt))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing similar track: %s", err)
-        return tracks
-
-    @use_cache(3600 * 3)
-    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
-        """Get artists similar to the given one via Kion artists/similar endpoint.
-
-        :param prov_artist_id: Provider artist ID.
-        :param limit: Maximum number of artists to return.
-        :return: List of similar Artist objects.
-        """
-        raw_artists = await self.client.get_similar_artists(prov_artist_id, limit=limit)
-        artists: list[Artist] = []
-        for ya in raw_artists:
-            try:
-                artists.append(parse_artist(self, ya))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing similar artist: %s", err)
-        return artists
-
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations with multiple discovery folders.
-
-        Returns My Mix, Feed (Made for You), Chart, New Releases, and
-        New Playlists sections.
-
-        :return: List of recommendation folders.
-        """
-        folders: list[RecommendationFolder] = []
-
-        folder = await self._get_my_wave_recommendations()
-        if folder:
-            folders.append(folder)
-
-        folder = await self._get_feed_recommendations()
-        if folder:
-            folders.append(folder)
-
-        folder = await self._get_chart_recommendations()
-        if folder:
-            folders.append(folder)
-
-        folder = await self._get_new_releases_recommendations()
-        if folder:
-            folders.append(folder)
-
-        folder = await self._get_new_playlists_recommendations()
-        if folder:
-            folders.append(folder)
-
-        # Picks & Mixes recommendations
-        folder = await self._get_top_picks_recommendations()
-        if folder:
-            folders.append(folder)
-
-        # Mood mix: select tag outside cache so rotation actually works
-        mood_tag = await self._pick_random_tag_for_category("mood")
-        if mood_tag:
-            folder = await self._get_mood_mix_recommendations(mood_tag)
-            if folder:
-                folders.append(folder)
-
-        # Activity mix: select tag outside cache so rotation actually works
-        activity_tag = await self._pick_random_tag_for_category("activity")
-        if activity_tag:
-            folder = await self._get_activity_mix_recommendations(activity_tag)
-            if folder:
-                folders.append(folder)
-
-        folder = await self._get_seasonal_mix_recommendations()
-        if folder:
-            folders.append(folder)
-
-        return folders
-
     @use_cache(600)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
-        """Get My Mix recommendation folder with personalized tracks.
+        """
+        Get My Mix recommendation folder with personalized tracks.
 
         :return: RecommendationFolder with My Mix tracks, or None if empty.
         """
@@ -1921,7 +2353,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(1800)
     async def _get_feed_recommendations(self) -> RecommendationFolder | None:
-        """Get personalized feed playlists (Playlist of the Day, DejaVu, etc.).
+        """
+        Get personalized feed playlists (Playlist of the Day, DejaVu, etc.).
 
         :return: RecommendationFolder with generated playlists, or None if unavailable.
         """
@@ -1948,7 +2381,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_chart_recommendations(self) -> RecommendationFolder | None:
-        """Get chart tracks (hot tracks of the month).
+        """
+        Get chart tracks (hot tracks of the month).
 
         :return: RecommendationFolder with chart tracks, or None if unavailable.
         """
@@ -1981,7 +2415,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_new_releases_recommendations(self) -> RecommendationFolder | None:
-        """Get new album releases.
+        """
+        Get new album releases.
 
         :return: RecommendationFolder with new albums, or None if unavailable.
         """
@@ -2014,7 +2449,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_new_playlists_recommendations(self) -> RecommendationFolder | None:
-        """Get new editorial playlists.
+        """
+        Get new editorial playlists.
 
         :return: RecommendationFolder with new playlists, or None if unavailable.
         """
@@ -2051,7 +2487,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_top_picks_recommendations(self) -> RecommendationFolder | None:
-        """Get Top Picks recommendation folder (tag: top).
+        """
+        Get Top Picks recommendation folder (tag: top).
 
         :return: RecommendationFolder with top playlists, or None if unavailable.
         """
@@ -2076,7 +2513,8 @@ class KionMusicProvider(MusicProvider):
         )
 
     async def _pick_random_tag_for_category(self, category: str) -> str | None:
-        """Pick a random valid tag for a category (not cached — enables rotation).
+        """
+        Pick a random valid tag for a category (not cached — enables rotation).
 
         :param category: Category name ('mood', 'activity', etc.).
         :return: Random tag slug, or None if no valid tags.
@@ -2088,7 +2526,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(1800)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
-        """Get Mood Mix recommendation folder for a specific tag.
+        """
+        Get Mood Mix recommendation folder for a specific tag.
 
         :param mood_tag: Preselected mood tag slug.
         :return: RecommendationFolder with mood playlists, or None if unavailable.
@@ -2119,7 +2558,8 @@ class KionMusicProvider(MusicProvider):
     async def _get_activity_mix_recommendations(
         self, activity_tag: str
     ) -> RecommendationFolder | None:
-        """Get Activity Mix recommendation folder for a specific tag.
+        """
+        Get Activity Mix recommendation folder for a specific tag.
 
         :param activity_tag: Preselected activity tag slug.
         :return: RecommendationFolder with activity playlists, or None if unavailable.
@@ -2150,12 +2590,13 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 6)
     async def _get_seasonal_mix_recommendations(self) -> RecommendationFolder | None:
-        """Get Seasonal Mix recommendation folder (based on current month).
+        """
+        Get Seasonal Mix recommendation folder (based on current month).
 
         :return: RecommendationFolder with seasonal playlists, or None if unavailable.
         """
         # Determine current season tag
-        current_month = datetime.now(tz=UTC).month
+        current_month = utc().month
         seasonal_tag = TAG_SEASONAL_MAP.get(current_month, "autumn")
 
         # Validate the seasonal tag; fall back to autumn if not available
@@ -2183,398 +2624,9 @@ class KionMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3)
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Get playlist tracks.
-
-        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind",
-            my_wave, or liked_tracks).
-        :param page: Page number for pagination.
-        :return: List of Track objects.
-        """
-        self.logger.debug(
-            "get_playlist_tracks called: prov_playlist_id=%s, page=%s", prov_playlist_id, page
-        )
-
-        if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
-            self.logger.debug("Fetching My Mix tracks")
-            return await self._get_my_wave_playlist_tracks(page)
-
-        if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
-            self.logger.debug("Fetching Liked Tracks for virtual playlist")
-            result = await self._get_liked_tracks_playlist_tracks(page)
-            self.logger.debug("Liked Tracks playlist returned %s tracks", len(result))
-            return result
-
-        # KION Music API returns all playlist tracks in one call (no server-side pagination).
-        # Return empty list for page > 0 so the controller pagination loop terminates.
-        if page > 0:
-            return []
-
-        # Parse the playlist ID (format: owner_id:kind)
-        if PLAYLIST_ID_SPLITTER in prov_playlist_id:
-            owner_id, kind = prov_playlist_id.split(PLAYLIST_ID_SPLITTER, 1)
-        else:
-            owner_id = str(self.client.user_id)
-            kind = prov_playlist_id
-
-        playlist = await self.client.get_playlist(owner_id, kind)
-        if not playlist:
-            return []
-
-        # API sometimes returns playlist without tracks; fetch them explicitly if needed
-        tracks_list = playlist.tracks or []
-        track_count = getattr(playlist, "track_count", None) or 0
-        if not tracks_list and track_count > 0:
-            self.logger.debug(
-                "Playlist %s/%s: track_count=%s but no tracks in response, "
-                "calling fetch_tracks_async",
-                owner_id,
-                kind,
-                track_count,
-            )
-            try:
-                tracks_list = await playlist.fetch_tracks_async()
-            except Exception as err:
-                self.logger.warning("fetch_tracks_async failed for %s/%s: %s", owner_id, kind, err)
-            if not tracks_list:
-                raise ResourceTemporarilyUnavailable(
-                    "Playlist tracks not available; try again later"
-                )
-
-        if not tracks_list:
-            return []
-
-        # Kion returns TrackShort objects, we need to fetch full track info
-        track_ids = [
-            str(track.track_id) if hasattr(track, "track_id") else str(track.id)
-            for track in tracks_list
-            if track
-        ]
-        if not track_ids:
-            return []
-
-        # Fetch full track details in batches to avoid timeouts
-        batch_size = TRACK_BATCH_SIZE
-        full_tracks = []
-        for i in range(0, len(track_ids), batch_size):
-            batch = track_ids[i : i + batch_size]
-            batch_result = await self.client.get_tracks(batch)
-            if not batch_result:
-                self.logger.warning(
-                    "Received empty result for playlist %s tracks batch %s-%s",
-                    prov_playlist_id,
-                    i,
-                    i + len(batch) - 1,
-                )
-                raise ResourceTemporarilyUnavailable(
-                    "Playlist tracks not fully available; try again later"
-                )
-            full_tracks.extend(batch_result)
-
-        if track_ids and not full_tracks:
-            raise ResourceTemporarilyUnavailable("Failed to load track details; try again later")
-
-        tracks = []
-        for track in full_tracks:
-            try:
-                tracks.append(parse_track(self, track))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing playlist track: %s", err)
-        return tracks
-
-    @use_cache(3600 * 24 * 7)
-    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get artist's albums.
-
-        :param prov_artist_id: The provider artist ID.
-        :return: List of Album objects.
-        """
-        albums = await self.client.get_artist_albums(prov_artist_id)
-        result = []
-        for album in albums:
-            try:
-                result.append(parse_album(self, album))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing artist album: %s", err)
-        return result
-
-    @use_cache(3600 * 24 * 7)
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get artist's top tracks.
-
-        :param prov_artist_id: The provider artist ID.
-        :return: List of Track objects.
-        """
-        tracks = await self.client.get_artist_tracks(prov_artist_id)
-        result = []
-        for track in tracks:
-            try:
-                result.append(parse_track(self, track))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing artist track: %s", err)
-        return result
-
-    # Library methods
-
-    async def get_library_artists(self) -> AsyncGenerator[Artist]:
-        """Retrieve library artists from KION Music."""
-        artists = await self.client.get_liked_artists()
-        for artist in artists:
-            try:
-                yield parse_artist(self, artist)
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing library artist: %s", err)
-
-    async def get_library_albums(self) -> AsyncGenerator[Album]:
-        """Retrieve library albums from KION Music."""
-        batch_size = TRACK_BATCH_SIZE
-        albums = await self.client.get_liked_albums(batch_size=batch_size)
-        for album in albums:
-            try:
-                yield parse_album(self, album)
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing library album: %s", err)
-
-    async def get_library_tracks(self) -> AsyncGenerator[Track]:
-        """Retrieve library tracks from KION Music."""
-        track_shorts = await self.client.get_liked_tracks()
-        if not track_shorts:
-            return
-
-        # Fetch full track details in batches
-        track_ids = [str(ts.track_id) for ts in track_shorts if ts.track_id]
-        batch_size = TRACK_BATCH_SIZE
-        for i in range(0, len(track_ids), batch_size):
-            batch_ids = track_ids[i : i + batch_size]
-            full_tracks = await self.client.get_tracks(batch_ids)
-            for track in full_tracks:
-                try:
-                    yield parse_track(self, track)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing library track: %s", err)
-
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
-        """Retrieve library playlists from KION Music.
-
-        Includes virtual playlists (My Mix and Liked Tracks if enabled), user-created playlists,
-        and user-liked editorial playlists (returned by a separate API endpoint).
-        """
-        yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
-        yield await self.get_playlist(LIKED_TRACKS_PLAYLIST_ID)
-        seen_ids: set[str] = set()
-        # User-created playlists
-        playlists = await self.client.get_user_playlists()
-        for playlist in playlists:
-            try:
-                parsed = parse_playlist(self, playlist)
-                seen_ids.add(parsed.item_id)
-                yield parsed
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing library playlist: %s", err)
-        # User-liked editorial playlists (not in users_playlists_list)
-        liked_playlists = await self.client.get_liked_playlists()
-        for playlist in liked_playlists:
-            try:
-                parsed = parse_playlist(self, playlist)
-                if parsed.item_id not in seen_ids:
-                    yield parsed
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing liked playlist: %s", err)
-
-    # Library edit methods
-
-    async def library_add(self, item: MediaItemType) -> bool:
-        """Add item to library.
-
-        :param item: The media item to add.
-        :return: True if successful.
-        """
-        prov_item_id = self._get_provider_item_id(item)
-        if not prov_item_id:
-            return False
-        track_id, _ = _parse_radio_item_id(prov_item_id)
-
-        if item.media_type == MediaType.TRACK:
-            return await self.client.like_track(track_id)
-        if item.media_type == MediaType.ALBUM:
-            return await self.client.like_album(prov_item_id)
-        if item.media_type == MediaType.ARTIST:
-            return await self.client.like_artist(prov_item_id)
-        return False
-
-    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove item from library.
-
-        :param prov_item_id: The provider item ID (may be track_id@station_id for tracks).
-        :param media_type: The media type.
-        :return: True if successful.
-        """
-        track_id, _ = _parse_radio_item_id(prov_item_id)
-        if media_type == MediaType.TRACK:
-            return await self.client.unlike_track(track_id)
-        if media_type == MediaType.ALBUM:
-            return await self.client.unlike_album(prov_item_id)
-        if media_type == MediaType.ARTIST:
-            return await self.client.unlike_artist(prov_item_id)
-        return False
-
     def _get_provider_item_id(self, item: MediaItemType) -> str | None:
         """Get provider item ID from media item."""
         for mapping in item.provider_mappings:
             if mapping.provider_instance == self.instance_id:
                 return mapping.item_id
         return item.item_id if item.provider == self.instance_id else None
-
-    # Streaming
-
-    async def get_stream_details(
-        self, item_id: str, media_type: MediaType = MediaType.TRACK
-    ) -> StreamDetails:
-        """Get stream details for a track.
-
-        :param item_id: The track ID (or track_id@station_id for My Mix).
-        :param media_type: The media type (should be TRACK).
-        :return: StreamDetails for the track.
-        """
-        return await self.streaming.get_stream_details(item_id)
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes]:
-        """Return the audio stream for the provider item.
-
-        Uses windowed Range-request streaming to prevent Kion CDN drops.
-        Handles both raw (direct) and encrypted (encraw) transports.
-
-        :param streamdetails: Stream details with URL and optional decryption key.
-        :param seek_position: Seek position in seconds (handled by provider for raw transport).
-        :return: Async generator yielding audio chunks.
-        """
-        async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
-            yield chunk
-
-    async def get_rotor_station_tracks(
-        self, station_id: str, queue: str | int | None = None
-    ) -> tuple[list[Any], str | None]:
-        """Fetch tracks from a rotor station (My Mix, similar, etc.).
-
-        Wrapper around client.get_rotor_station_tracks for use by ynison plugin.
-        """
-        return await self.client.get_rotor_station_tracks(station_id, queue=queue)
-
-    def get_quality(self) -> str:
-        """Return the configured audio quality tier (e.g. 'balanced', 'superb').
-
-        Mirrors the legacy-value normalization used by the streaming layer:
-        older configs store the lossless tier as ``"lossless"``, while the
-        current canonical value is ``QUALITY_LOSSLESS`` (``"superb"``).
-        External callers (e.g. the ynison plugin wrapper) see the same
-        normalized value the streaming code would resolve to.
-        """
-        quality = str(self.config.get_value(CONF_QUALITY) or "").strip().lower()
-        if quality == "lossless":
-            quality = QUALITY_LOSSLESS
-        return quality
-
-    async def resolve_image(self, path: str) -> str | bytes:
-        """Resolve wave cover image with background color fill for transparent PNGs.
-
-        If the image URL has an associated background color (stored in _wave_bg_colors),
-        downloads the PNG from Kion CDN and composites it on a solid color background
-        using Pillow, returning JPEG bytes. Falls back to the original URL on any error.
-
-        :param path: Image URL (may include #rrggbb fragment used as cache key).
-        :return: Composited JPEG bytes, or original path string as fallback.
-        """
-        bg_color = self._wave_bg_colors.get(path)
-        if not bg_color:
-            return path
-
-        # Strip the #color fragment before fetching the actual image
-        fetch_url = path.split("#", maxsplit=1)[0] if "#" in path else path
-        try:
-            async with self.mass.http_session.get(fetch_url) as resp:
-                resp.raise_for_status()
-                raw = await resp.read()
-        except Exception as err:
-            self.logger.debug("Failed to fetch wave cover %s: %s", fetch_url, err)
-            return fetch_url
-
-        def _composite() -> bytes:
-            bg_clean = bg_color.lstrip("#")
-            try:
-                r = int(bg_clean[0:2], 16)
-                g = int(bg_clean[2:4], 16)
-                b = int(bg_clean[4:6], 16)
-            except (ValueError, IndexError):
-                return raw
-            fg = PilImage.open(BytesIO(raw)).convert("RGBA")
-            bg = PilImage.new("RGBA", fg.size, (r, g, b, 255))
-            bg.paste(fg, mask=fg)
-            out = BytesIO()
-            bg.convert("RGB").save(out, "JPEG", quality=92)
-            return out.getvalue()
-
-        try:
-            return await asyncio.to_thread(_composite)
-        except Exception as err:
-            self.logger.debug("Wave cover composite failed for %s: %s", fetch_url, err)
-            return fetch_url
-
-    async def on_played(
-        self,
-        media_type: MediaType,
-        prov_item_id: str,
-        fully_played: bool,
-        position: int,
-        media_item: MediaItemType,
-        is_playing: bool = False,
-    ) -> None:
-        """Report playback for rotor feedback when the track is from My Mix.
-
-        Sends trackStarted when the track is currently playing (is_playing=True).
-        trackFinished/skip are sent from on_streamed to use accurate seconds_streamed.
-        """
-        if media_type != MediaType.TRACK:
-            return
-        track_id, station_id = _parse_radio_item_id(prov_item_id)
-        if not station_id:
-            return
-        if is_playing:
-            if station_id == ROTOR_STATION_MY_MIX:
-                batch_id = self._my_wave_batch_id
-            else:
-                state = self._wave_states.get(station_id)
-                batch_id = state.batch_id if state else None
-            await self.client.send_rotor_station_feedback(
-                station_id,
-                "trackStarted",
-                track_id=track_id,
-                batch_id=batch_id,
-            )
-
-    async def on_streamed(self, streamdetails: StreamDetails) -> None:
-        """Report stream completion for My Mix rotor feedback.
-
-        Sends trackFinished or skip with actual seconds_streamed so Kion
-        can improve recommendations.
-        """
-        track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
-        if not station_id:
-            return
-        seconds = int(streamdetails.seconds_streamed or 0)
-        duration = streamdetails.duration or 0
-        feedback_type = "trackFinished" if duration and seconds >= max(0, duration - 10) else "skip"
-        if station_id == ROTOR_STATION_MY_MIX:
-            batch_id = self._my_wave_batch_id
-        else:
-            state = self._wave_states.get(station_id)
-            batch_id = state.batch_id if state else None
-        await self.client.send_rotor_station_feedback(
-            station_id,
-            feedback_type,
-            track_id=track_id,
-            total_played_seconds=seconds,
-            batch_id=batch_id,
-        )
