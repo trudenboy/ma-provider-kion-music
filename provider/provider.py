@@ -162,9 +162,205 @@ class KionMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
 
+<<<<<<< ours
+=======
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get the available recommendation rows, without items.
+
+        Returns My Mix, Made for you, Chart, New Releases, New Playlists,
+        Top Picks, Mood Mix, Activity Mix and Seasonal Mix rows.
+        """
+        # The seasonal row title carries the current season, derived locally from the month.
+        seasonal_tag = TAG_SEASONAL_MAP.get(utc().month, "autumn")
+        seasonal_name = (
+            self._media_source_name("folder", _media_label_key(seasonal_tag))
+            or seasonal_tag.title()
+        )
+        return [
+            RecommendationFolder(
+                item_id=MY_WAVE_PLAYLIST_ID,
+                provider=self.instance_id,
+                name="My Mix",
+                translation_key=MY_WAVE_PLAYLIST_ID,
+                icon="mdi-waveform",
+            ),
+            RecommendationFolder(
+                item_id="feed",
+                provider=self.instance_id,
+                name="Made for you",
+                translation_key="made_for_you",
+                icon="mdi-account-music",
+            ),
+            RecommendationFolder(
+                item_id="chart",
+                provider=self.instance_id,
+                name="Chart",
+                translation_key="chart",
+                icon="mdi-chart-line",
+            ),
+            RecommendationFolder(
+                item_id="new_releases",
+                provider=self.instance_id,
+                name="New Releases",
+                translation_key="new_releases",
+                icon="mdi-new-box",
+            ),
+            RecommendationFolder(
+                item_id="new_playlists",
+                provider=self.instance_id,
+                name="New Playlists",
+                translation_key="new_playlists",
+                icon="mdi-playlist-star",
+            ),
+            RecommendationFolder(
+                item_id="top_picks",
+                provider=self.instance_id,
+                name="Top Picks",
+                translation_key="top_picks",
+                icon="mdi-star",
+            ),
+            # Mood/Activity rows have a static title; the hourly rotating tag - derived
+            # deterministically, so the items call independently computes the same one -
+            # shows as the row subtitle (cache-only tag-list read, no backend I/O).
+            RecommendationFolder(
+                item_id="mood_mix",
+                provider=self.instance_id,
+                name="Mood Mix",
+                translation_key="mood_mix",
+                subtitle=await self._rotating_row_tag_subtitle("mood"),
+                icon="mdi-emoticon-outline",
+            ),
+            RecommendationFolder(
+                item_id="activity_mix",
+                provider=self.instance_id,
+                name="Activity Mix",
+                translation_key="activity_mix",
+                subtitle=await self._rotating_row_tag_subtitle("activity"),
+                icon="mdi-run",
+            ),
+            RecommendationFolder(
+                item_id="seasonal_mix",
+                provider=self.instance_id,
+                name=f"Seasonal: {seasonal_name}",
+                translation_key="seasonal_mix",
+                translation_params=[seasonal_name],
+                icon="mdi-weather-sunny",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        folder: RecommendationFolder | None = None
+        if item_id == MY_WAVE_PLAYLIST_ID:
+            folder = await self._get_my_wave_recommendations()
+        elif item_id == "feed":
+            folder = await self._get_feed_recommendations()
+        elif item_id == "chart":
+            folder = await self._get_chart_recommendations()
+        elif item_id == "new_releases":
+            folder = await self._get_new_releases_recommendations()
+        elif item_id == "new_playlists":
+            folder = await self._get_new_playlists_recommendations()
+        elif item_id == "top_picks":
+            folder = await self._get_top_picks_recommendations()
+        elif item_id == "mood_mix":
+            # the deterministic hourly tag keeps the served items matching the row subtitle
+            if mood_tags := await self._get_valid_tags_for_category("mood"):
+                folder = await self._get_mood_mix_recommendations(
+                    self._rotating_row_tag("mood", mood_tags)
+                )
+        elif item_id == "activity_mix":
+            if activity_tags := await self._get_valid_tags_for_category("activity"):
+                folder = await self._get_activity_mix_recommendations(
+                    self._rotating_row_tag("activity", activity_tags)
+                )
+        elif item_id == "seasonal_mix":
+            folder = await self._get_seasonal_mix_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        The token is collected by the interactive setup flow (see setup_flow.py); this
+        surface only exposes the genuine playback options.
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            # Quality
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(QUALITY_EFFICIENT),
+                    ConfigValueOption(QUALITY_BALANCED),
+                    ConfigValueOption(QUALITY_HIGH),
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                ],
+                default_value=QUALITY_BALANCED,
+            ),
+            # My Mix maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_MY_WAVE_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(10, 1000),
+                default_value=150,
+                required=False,
+                advanced=True,
+            ),
+            # Liked Tracks maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_LIKED_TRACKS_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(50, 2000),
+                default_value=500,
+                required=False,
+                advanced=True,
+            ),
+            # Transport mode (advanced)
+            ConfigEntry(
+                key=CONF_TRANSPORT,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(TRANSPORT_RAW),
+                    ConfigValueOption(TRANSPORT_ENCRAW),
+                ],
+                default_value=TRANSPORT_RAW,
+                required=False,
+                advanced=True,
+            ),
+            # Custom codecs override (advanced)
+            ConfigEntry(
+                key=CONF_CODECS,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+                advanced=True,
+            ),
+            # API Base URL (advanced)
+            ConfigEntry(
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                translation_params=[DEFAULT_BASE_URL],
+                default_value=DEFAULT_BASE_URL,
+                required=False,
+                advanced=True,
+            ),
+        )
+
+>>>>>>> theirs
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No KION Music token provided")
 
