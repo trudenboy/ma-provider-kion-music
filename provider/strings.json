@@ -43,6 +43,18 @@
       "description": "API endpoint base URL. Only change if KION Music changes their API endpoint. Default: {0}"
     }
   },
+<<<<<<< ours
+=======
+  "setup_flow": {
+    "user": {
+      "title": "Connect to KION Music",
+      "description": "Music Assistant needs your personal KION Music OAuth token to reach your account and library."
+    }
+  },
+  "errors": {
+    "login_failed": "Could not sign in to KION Music with this token. See the documentation for how to obtain a fresh OAuth token."
+  },
+>>>>>>> theirs
   "media": {
     "folder": {
       "my_wave": { "name": "My Mix" },
