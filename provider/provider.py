@@ -1663,11 +1663,20 @@ class KionMusicProvider(MusicProvider):
         if tag and tag in TAG_MIXES:
             return await self._get_tag_playlists_as_browse(tag)
 
+<<<<<<< ours
         return []
 
     def _get_wave_state(self, station_id: str) -> _WaveState:
         """
         Get or create per-station wave state.
+=======
+    # single_flight=False: this advances the rotor cursor and sends a one-shot "radioStarted"
+    # feedback, so concurrent callers must each get their own batch instead of sharing one
+    @use_cache(3600 * 3, allow_expired_cache=True, single_flight=False)
+    async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
+        """
+        Get My Mix tracks for virtual playlist (uses cursor for page > 0).
+>>>>>>> theirs
 
         :param station_id: Rotor station ID (e.g. 'genre:rock', 'mood:chill').
         :return: _WaveState instance for this station.
@@ -1818,10 +1827,15 @@ class KionMusicProvider(MusicProvider):
             station_id = f"{category}:{tag}"
             return await self._browse_wave_station(station_id, path=path)
 
+<<<<<<< ours
         return []
 
     @use_cache(600)
     async def _get_dashboard_stations_cached(self) -> list[tuple[str, str, str | None]]:
+=======
+    @use_cache(3600 * 3, allow_expired_cache=True)
+    async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
+>>>>>>> theirs
         """
         Get personalized dashboard stations, cached for 10 minutes.
 
@@ -2155,8 +2169,12 @@ class KionMusicProvider(MusicProvider):
         self.logger.debug("Parsed %d playlists for tag %s", len(result), tag_id)
         return result
 
+<<<<<<< ours
     @use_cache(3600 * 24 * 30)
     async def _get_track_cached(self, track_id: str) -> Track:
+=======
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+>>>>>>> theirs
         """
         Get track details by normalized ID (cached).
 
@@ -2173,10 +2191,28 @@ class KionMusicProvider(MusicProvider):
 
         return parse_track(self, raw_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
 
+<<<<<<< ours
     @use_cache(3600 * 24 * 30)
     async def _get_real_playlist(self, prov_playlist_id: str) -> Playlist:
         """
         Get real playlist details by ID (cached).
+=======
+        return await self._get_regular_playlist_tracks(prov_playlist_id, page)
+
+    @use_cache(3600 * 3, allow_expired_cache=True)
+    async def _get_regular_playlist_tracks(self, prov_playlist_id: str, page: int) -> list[Track]:
+        """
+        Get the tracks of a regular (non-virtual) playlist.
+
+        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
+        :param page: Page number for pagination.
+        :return: List of Track objects.
+        """
+        # KION Music API returns all playlist tracks in one call (no server-side pagination).
+        # Return empty list for page > 0 so the controller pagination loop terminates.
+        if page > 0:
+            return []
+>>>>>>> theirs
 
         :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
         :return: Playlist object.
