@@ -216,6 +216,57 @@ def _install_tag_cache(provider: KionMusicProvider, tags_by_category: dict[str, 
 
 
 @pytest.mark.asyncio
+async def test_expired_tag_list_is_served_while_refreshing(
+    provider: KionMusicProvider,
+) -> None:
+    """An expired tag list remains available while its refresh runs in the background."""
+    stale_tags = ["chill", "focus"]
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        return_value=(stale_tags, False, True)
+    )
+    refresh_gate = asyncio.Event()
+    refresh_started = asyncio.Event()
+
+    async def _blocked_landing_tags() -> list[Any]:
+        refresh_started.set()
+        await refresh_gate.wait()
+        return []
+
+    client = cast("Mock", provider.client)
+    client.get_landing_tags.side_effect = _blocked_landing_tags
+    background_tasks: set[asyncio.Task[Any]] = set()
+
+    def _create_task(target: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(target)
+        background_tasks.add(task)
+        return task
+
+    provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]
+    request = asyncio.create_task(provider._get_valid_tags_for_category("mood"))
+    await asyncio.sleep(0)
+
+    try:
+        assert request.done()
+        assert await request == stale_tags
+        await asyncio.wait_for(refresh_started.wait(), timeout=1)
+        assert any(not task.done() for task in background_tasks)
+        provider.mass.cache.get_with_freshness.assert_awaited_once_with(
+            "_get_valid_tags_for_category.mood",
+            provider=provider.instance_id,
+            checksum=None,
+            category=0,
+            allow_bypass=True,
+            base_class=None,
+            include_expired=True,
+        )
+    finally:
+        request.cancel()
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(request, *background_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_rows_subtitle_matches_served_items_tag(
     provider: KionMusicProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
