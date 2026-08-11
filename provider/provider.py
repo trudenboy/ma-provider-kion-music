@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
+import zlib
 from collections.abc import AsyncGenerator, Coroutine, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -33,6 +34,7 @@ from music_assistant_models.media_items import (
 )
 from PIL import Image as PilImage
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
@@ -42,10 +44,12 @@ from .constants import (
     BROWSE_INITIAL_TRACKS,
     COLLECTION_FOLDER_ID,
     CONF_BASE_URL,
+    CONF_CODECS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_TOKEN,
+    CONF_TRANSPORT,
     DEFAULT_BASE_URL,
     DISCOVERY_INITIAL_TRACKS,
     FOR_YOU_FOLDER_ID,
@@ -58,6 +62,9 @@ from .constants import (
     MY_WAVES_SET_FOLDER_ID,
     PINNED_ITEMS_FOLDER_ID,
     PLAYLIST_ID_SPLITTER,
+    QUALITY_BALANCED,
+    QUALITY_EFFICIENT,
+    QUALITY_HIGH,
     QUALITY_LOSSLESS,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
@@ -71,6 +78,8 @@ from .constants import (
     TAG_SEASONAL_MAP,
     TAG_SLUG_CATEGORY,
     TRACK_BATCH_SIZE,
+    TRANSPORT_ENCRAW,
+    TRANSPORT_RAW,
     WAVE_CATEGORY_DISPLAY_ORDER,
     WAVES_FOLDER_ID,
     WAVES_LANDING_FOLDER_ID,
@@ -164,7 +173,7 @@ class KionMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No KION Music token provided")
 
@@ -631,63 +640,199 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing similar artist: %s", err)
         return artists
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Get recommendations with multiple discovery folders.
+        Get the available recommendation rows, without items.
 
-        Returns My Mix, Feed (Made for You), Chart, New Releases, and
-        New Playlists sections.
-
-        :return: List of recommendation folders.
+        Returns My Mix, Made for you, Chart, New Releases, New Playlists,
+        Top Picks, Mood Mix, Activity Mix and Seasonal Mix rows.
         """
-        folders: list[RecommendationFolder] = []
+        # The seasonal row title carries the current season, derived locally from the month.
+        seasonal_tag = TAG_SEASONAL_MAP.get(utc().month, "autumn")
+        seasonal_name = (
+            self._media_source_name("folder", _media_label_key(seasonal_tag))
+            or seasonal_tag.title()
+        )
+        return [
+            RecommendationFolder(
+                item_id=MY_WAVE_PLAYLIST_ID,
+                provider=self.instance_id,
+                name="My Mix",
+                translation_key=MY_WAVE_PLAYLIST_ID,
+                icon="mdi-waveform",
+            ),
+            RecommendationFolder(
+                item_id="feed",
+                provider=self.instance_id,
+                name="Made for you",
+                translation_key="made_for_you",
+                icon="mdi-account-music",
+            ),
+            RecommendationFolder(
+                item_id="chart",
+                provider=self.instance_id,
+                name="Chart",
+                translation_key="chart",
+                icon="mdi-chart-line",
+            ),
+            RecommendationFolder(
+                item_id="new_releases",
+                provider=self.instance_id,
+                name="New Releases",
+                translation_key="new_releases",
+                icon="mdi-new-box",
+            ),
+            RecommendationFolder(
+                item_id="new_playlists",
+                provider=self.instance_id,
+                name="New Playlists",
+                translation_key="new_playlists",
+                icon="mdi-playlist-star",
+            ),
+            RecommendationFolder(
+                item_id="top_picks",
+                provider=self.instance_id,
+                name="Top Picks",
+                translation_key="top_picks",
+                icon="mdi-star",
+            ),
+            # Mood/Activity rows have a static title; the hourly rotating tag - derived
+            # deterministically, so the items call independently computes the same one -
+            # shows as the row subtitle (cache-only tag-list read, no backend I/O).
+            RecommendationFolder(
+                item_id="mood_mix",
+                provider=self.instance_id,
+                name="Mood Mix",
+                translation_key="mood_mix",
+                subtitle=await self._rotating_row_tag_subtitle("mood"),
+                icon="mdi-emoticon-outline",
+            ),
+            RecommendationFolder(
+                item_id="activity_mix",
+                provider=self.instance_id,
+                name="Activity Mix",
+                translation_key="activity_mix",
+                subtitle=await self._rotating_row_tag_subtitle("activity"),
+                icon="mdi-run",
+            ),
+            RecommendationFolder(
+                item_id="seasonal_mix",
+                provider=self.instance_id,
+                name=f"Seasonal: {seasonal_name}",
+                translation_key="seasonal_mix",
+                translation_params=[seasonal_name],
+                icon="mdi-weather-sunny",
+            ),
+        ]
 
-        folder = await self._get_my_wave_recommendations()
-        if folder:
-            folders.append(folder)
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
 
-        folder = await self._get_feed_recommendations()
-        if folder:
-            folders.append(folder)
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        folder: RecommendationFolder | None = None
+        if item_id == MY_WAVE_PLAYLIST_ID:
+            folder = await self._get_my_wave_recommendations()
+        elif item_id == "feed":
+            folder = await self._get_feed_recommendations()
+        elif item_id == "chart":
+            folder = await self._get_chart_recommendations()
+        elif item_id == "new_releases":
+            folder = await self._get_new_releases_recommendations()
+        elif item_id == "new_playlists":
+            folder = await self._get_new_playlists_recommendations()
+        elif item_id == "top_picks":
+            folder = await self._get_top_picks_recommendations()
+        elif item_id == "mood_mix":
+            # the deterministic hourly tag keeps the served items matching the row subtitle
+            if mood_tags := await self._get_valid_tags_for_category("mood"):
+                folder = await self._get_mood_mix_recommendations(
+                    self._rotating_row_tag("mood", mood_tags)
+                )
+        elif item_id == "activity_mix":
+            if activity_tags := await self._get_valid_tags_for_category("activity"):
+                folder = await self._get_activity_mix_recommendations(
+                    self._rotating_row_tag("activity", activity_tags)
+                )
+        elif item_id == "seasonal_mix":
+            folder = await self._get_seasonal_mix_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
 
-        folder = await self._get_chart_recommendations()
-        if folder:
-            folders.append(folder)
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
 
-        folder = await self._get_new_releases_recommendations()
-        if folder:
-            folders.append(folder)
+        The token is collected by the interactive setup flow (see setup_flow.py); this
+        surface only exposes the genuine playback options.
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            # Quality
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(QUALITY_EFFICIENT),
+                    ConfigValueOption(QUALITY_BALANCED),
+                    ConfigValueOption(QUALITY_HIGH),
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                ],
+                default_value=QUALITY_BALANCED,
+            ),
+            # My Mix maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_MY_WAVE_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(10, 1000),
+                default_value=150,
+                required=False,
+                advanced=True,
+            ),
+            # Liked Tracks maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_LIKED_TRACKS_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(50, 2000),
+                default_value=500,
+                required=False,
+                advanced=True,
+            ),
+            # Transport mode (advanced)
+            ConfigEntry(
+                key=CONF_TRANSPORT,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(TRANSPORT_RAW),
+                    ConfigValueOption(TRANSPORT_ENCRAW),
+                ],
+                default_value=TRANSPORT_RAW,
+                required=False,
+                advanced=True,
+            ),
+            # Custom codecs override (advanced)
+            ConfigEntry(
+                key=CONF_CODECS,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+                advanced=True,
+            ),
+            # API Base URL (advanced)
+            ConfigEntry(
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                translation_params=[DEFAULT_BASE_URL],
+                default_value=DEFAULT_BASE_URL,
+                required=False,
+                advanced=True,
+            ),
+        )
 
-        folder = await self._get_new_playlists_recommendations()
-        if folder:
-            folders.append(folder)
-
-        # Picks & Mixes recommendations
-        folder = await self._get_top_picks_recommendations()
-        if folder:
-            folders.append(folder)
-
-        # Mood mix: select tag outside cache so rotation actually works
-        mood_tag = await self._pick_random_tag_for_category("mood")
-        if mood_tag:
-            folder = await self._get_mood_mix_recommendations(mood_tag)
-            if folder:
-                folders.append(folder)
-
-        # Activity mix: select tag outside cache so rotation actually works
-        activity_tag = await self._pick_random_tag_for_category("activity")
-        if activity_tag:
-            folder = await self._get_activity_mix_recommendations(activity_tag)
-            if folder:
-                folders.append(folder)
-
-        folder = await self._get_seasonal_mix_recommendations()
-        if folder:
-            folders.append(folder)
-
-        return folders
-
-    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
         Get playlist tracks.
@@ -711,82 +856,7 @@ class KionMusicProvider(MusicProvider):
             self.logger.debug("Liked Tracks playlist returned %s tracks", len(result))
             return result
 
-        # KION Music API returns all playlist tracks in one call (no server-side pagination).
-        # Return empty list for page > 0 so the controller pagination loop terminates.
-        if page > 0:
-            return []
-
-        # Parse the playlist ID (format: owner_id:kind)
-        if PLAYLIST_ID_SPLITTER in prov_playlist_id:
-            owner_id, kind = prov_playlist_id.split(PLAYLIST_ID_SPLITTER, 1)
-        else:
-            owner_id = str(self.client.user_id)
-            kind = prov_playlist_id
-
-        playlist = await self.client.get_playlist(owner_id, kind)
-        if not playlist:
-            return []
-
-        # API sometimes returns playlist without tracks; fetch them explicitly if needed
-        tracks_list = playlist.tracks or []
-        track_count = getattr(playlist, "track_count", None) or 0
-        if not tracks_list and track_count > 0:
-            self.logger.debug(
-                "Playlist %s/%s: track_count=%s but no tracks in response, "
-                "calling fetch_tracks_async",
-                owner_id,
-                kind,
-                track_count,
-            )
-            try:
-                tracks_list = await playlist.fetch_tracks_async()
-            except Exception as err:
-                self.logger.warning("fetch_tracks_async failed for %s/%s: %s", owner_id, kind, err)
-            if not tracks_list:
-                raise ResourceTemporarilyUnavailable(
-                    "Playlist tracks not available; try again later"
-                )
-
-        if not tracks_list:
-            return []
-
-        # Kion returns TrackShort objects, we need to fetch full track info
-        track_ids = [
-            str(track.track_id) if hasattr(track, "track_id") else str(track.id)
-            for track in tracks_list
-            if track
-        ]
-        if not track_ids:
-            return []
-
-        # Fetch full track details in batches to avoid timeouts
-        batch_size = TRACK_BATCH_SIZE
-        full_tracks = []
-        for i in range(0, len(track_ids), batch_size):
-            batch = track_ids[i : i + batch_size]
-            batch_result = await self.client.get_tracks(batch)
-            if not batch_result:
-                self.logger.warning(
-                    "Received empty result for playlist %s tracks batch %s-%s",
-                    prov_playlist_id,
-                    i,
-                    i + len(batch) - 1,
-                )
-                raise ResourceTemporarilyUnavailable(
-                    "Playlist tracks not fully available; try again later"
-                )
-            full_tracks.extend(batch_result)
-
-        if track_ids and not full_tracks:
-            raise ResourceTemporarilyUnavailable("Failed to load track details; try again later")
-
-        tracks = []
-        for track in full_tracks:
-            try:
-                tracks.append(parse_track(self, track))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing playlist track: %s", err)
-        return tracks
+        return await self._get_regular_playlist_tracks(prov_playlist_id, page)
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -2194,9 +2264,96 @@ class KionMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return parse_playlist(self, playlist)
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
+    async def _get_regular_playlist_tracks(self, prov_playlist_id: str, page: int) -> list[Track]:
+        """
+        Get the tracks of a regular (non-virtual) playlist.
+
+        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
+        :param page: Page number for pagination.
+        :return: List of Track objects.
+        """
+        # KION Music API returns all playlist tracks in one call (no server-side pagination).
+        # Return empty list for page > 0 so the controller pagination loop terminates.
+        if page > 0:
+            return []
+
+        # Parse the playlist ID (format: owner_id:kind)
+        if PLAYLIST_ID_SPLITTER in prov_playlist_id:
+            owner_id, kind = prov_playlist_id.split(PLAYLIST_ID_SPLITTER, 1)
+        else:
+            owner_id = str(self.client.user_id)
+            kind = prov_playlist_id
+
+        playlist = await self.client.get_playlist(owner_id, kind)
+        if not playlist:
+            return []
+
+        # API sometimes returns playlist without tracks; fetch them explicitly if needed
+        tracks_list = playlist.tracks or []
+        track_count = getattr(playlist, "track_count", None) or 0
+        if not tracks_list and track_count > 0:
+            self.logger.debug(
+                "Playlist %s/%s: track_count=%s but no tracks in response, "
+                "calling fetch_tracks_async",
+                owner_id,
+                kind,
+                track_count,
+            )
+            try:
+                tracks_list = await playlist.fetch_tracks_async()
+            except Exception as err:
+                self.logger.warning("fetch_tracks_async failed for %s/%s: %s", owner_id, kind, err)
+            if not tracks_list:
+                raise ResourceTemporarilyUnavailable(
+                    "Playlist tracks not available; try again later"
+                )
+
+        if not tracks_list:
+            return []
+
+        # Kion returns TrackShort objects, we need to fetch full track info
+        track_ids = [
+            str(track.track_id) if hasattr(track, "track_id") else str(track.id)
+            for track in tracks_list
+            if track
+        ]
+        if not track_ids:
+            return []
+
+        # Fetch full track details in batches to avoid timeouts
+        batch_size = TRACK_BATCH_SIZE
+        full_tracks = []
+        for i in range(0, len(track_ids), batch_size):
+            batch = track_ids[i : i + batch_size]
+            batch_result = await self.client.get_tracks(batch)
+            if not batch_result:
+                self.logger.warning(
+                    "Received empty result for playlist %s tracks batch %s-%s",
+                    prov_playlist_id,
+                    i,
+                    i + len(batch) - 1,
+                )
+                raise ResourceTemporarilyUnavailable(
+                    "Playlist tracks not fully available; try again later"
+                )
+            full_tracks.extend(batch_result)
+
+        if track_ids and not full_tracks:
+            raise ResourceTemporarilyUnavailable("Failed to load track details; try again later")
+
+        tracks = []
+        for track in full_tracks:
+            try:
+                tracks.append(parse_track(self, track))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing playlist track: %s", err)
+        return tracks
+
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
         """
-        Get My Mix tracks for virtual playlist (uncached; uses cursor for page > 0).
+        Get My Mix tracks for virtual playlist (cached per page; uses cursor for page > 0).
 
         Fetches MY_WAVE_BATCH_SIZE Rotor API batches per page call to reduce
         the number of round-trips when the player controller paginates through pages.
@@ -2271,6 +2428,7 @@ class KionMusicProvider(MusicProvider):
             self._my_wave_playlist_next_cursor = next_cursor
             return tracks
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
         """
         Get liked tracks for virtual playlist (sorted in reverse chronological order).
@@ -2549,17 +2707,43 @@ class KionMusicProvider(MusicProvider):
             icon="mdi-star",
         )
 
-    async def _pick_random_tag_for_category(self, category: str) -> str | None:
+    async def _rotating_row_tag_subtitle(self, category: str) -> str | None:
         """
-        Pick a random valid tag for a category (not cached — enables rotation).
+        Return the display label of the current rotating tag for a mood/activity row.
 
-        :param category: Category name ('mood', 'activity', etc.).
-        :return: Random tag slug, or None if no valid tags.
+        Cache-only read of the validated tag list (rows must stay free of backend I/O):
+        returns None - no subtitle - until an items fetch has warmed that cache.
+
+        :param category: Tag category ('mood' or 'activity').
         """
-        valid_tags = await self._get_valid_tags_for_category(category)
-        if not valid_tags:
+        # key mirrors the @use_cache key construction on _get_valid_tags_for_category:
+        # the wrapped function's __name__ (preserved by functools.wraps, so it survives
+        # renames) plus its positional args, joined by dots
+        tags, _, found = await self.mass.cache.get_with_freshness(
+            f"{self._get_valid_tags_for_category.__name__}.{category}",
+            provider=self.instance_id,
+            include_expired=True,
+        )
+        if not found or not tags:
             return None
-        return random.choice(valid_tags)
+        tag = self._rotating_row_tag(category, tags)
+        return self._media_source_name("folder", _media_label_key(tag)) or tag.title()
+
+    def _rotating_row_tag(self, category: str, valid_tags: list[str]) -> str:
+        """
+        Deterministically pick the current hour's tag for a mood/activity row.
+
+        Rows and items derive the same tag independently - no shared state, so
+        concurrent clients (or multiple users on one instance) can never make the
+        served items mismatch the row subtitle. The pick rotates hourly and
+        differs per provider instance.
+
+        :param category: Tag category the tags belong to.
+        :param valid_tags: Non-empty list of valid tag slugs to pick from.
+        """
+        hour_bucket = int(utc().timestamp()) // 3600
+        seed = f"{self.instance_id}.{category}.{hour_bucket}".encode()
+        return sorted(valid_tags)[zlib.crc32(seed) % len(valid_tags)]
 
     @use_cache(1800)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
