@@ -9,7 +9,8 @@ from collections.abc import AsyncGenerator, Coroutine, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -33,6 +34,7 @@ from music_assistant_models.media_items import (
 )
 from PIL import Image as PilImage
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
@@ -42,10 +44,12 @@ from .constants import (
     BROWSE_INITIAL_TRACKS,
     COLLECTION_FOLDER_ID,
     CONF_BASE_URL,
+    CONF_CODECS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_TOKEN,
+    CONF_TRANSPORT,
     DEFAULT_BASE_URL,
     DISCOVERY_INITIAL_TRACKS,
     FOR_YOU_FOLDER_ID,
@@ -58,6 +62,9 @@ from .constants import (
     MY_WAVES_SET_FOLDER_ID,
     PINNED_ITEMS_FOLDER_ID,
     PLAYLIST_ID_SPLITTER,
+    QUALITY_BALANCED,
+    QUALITY_EFFICIENT,
+    QUALITY_HIGH,
     QUALITY_LOSSLESS,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
@@ -71,6 +78,8 @@ from .constants import (
     TAG_SEASONAL_MAP,
     TAG_SLUG_CATEGORY,
     TRACK_BATCH_SIZE,
+    TRANSPORT_ENCRAW,
+    TRANSPORT_RAW,
     WAVE_CATEGORY_DISPLAY_ORDER,
     WAVES_FOLDER_ID,
     WAVES_LANDING_FOLDER_ID,
@@ -164,7 +173,7 @@ class KionMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No KION Music token provided")
 
@@ -753,6 +762,76 @@ class KionMusicProvider(MusicProvider):
         if folder is None:
             return UniqueList()
         return folder.items
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        The token is collected by the interactive setup flow (see setup_flow.py); this
+        surface only exposes the genuine playback options.
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            # Quality
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(QUALITY_EFFICIENT),
+                    ConfigValueOption(QUALITY_BALANCED),
+                    ConfigValueOption(QUALITY_HIGH),
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                ],
+                default_value=QUALITY_BALANCED,
+            ),
+            # My Mix maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_MY_WAVE_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(10, 1000),
+                default_value=150,
+                required=False,
+                advanced=True,
+            ),
+            # Liked Tracks maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_LIKED_TRACKS_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(50, 2000),
+                default_value=500,
+                required=False,
+                advanced=True,
+            ),
+            # Transport mode (advanced)
+            ConfigEntry(
+                key=CONF_TRANSPORT,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(TRANSPORT_RAW),
+                    ConfigValueOption(TRANSPORT_ENCRAW),
+                ],
+                default_value=TRANSPORT_RAW,
+                required=False,
+                advanced=True,
+            ),
+            # Custom codecs override (advanced)
+            ConfigEntry(
+                key=CONF_CODECS,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+                advanced=True,
+            ),
+            # API Base URL (advanced)
+            ConfigEntry(
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                translation_params=[DEFAULT_BASE_URL],
+                default_value=DEFAULT_BASE_URL,
+                required=False,
+                advanced=True,
+            ),
+        )
 
     @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
