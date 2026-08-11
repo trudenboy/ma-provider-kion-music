@@ -6,7 +6,7 @@
 
 **Architecture:** Port behavior from upstream merge commit `e7d50f8` onto fresh `origin/dev` without copying conflicted draft patches. Keep KION API parsing and radio behavior intact, split changes into independently reviewable commits, and exercise real provider methods with mocks only at external API and Music Assistant infrastructure boundaries.
 
-**Tech Stack:** Python 3.12+, asyncio, pytest, pytest-snapshot, Ruff, mypy, pre-commit, Music Assistant provider APIs, yandex-music.
+**Tech Stack:** Python 3.14, asyncio, pytest, pytest-snapshot, Ruff, mypy, pre-commit, Music Assistant provider APIs, yandex-music.
 
 ## Global Constraints
 
@@ -94,7 +94,12 @@ git commit -m "docs: define consolidated reverse-sync specification"
 
 **Interfaces:**
 - Consumes: existing parser tests and the installed `music-assistant-models` serialization contract.
-- Produces: snapshot expectations containing the current `audio_metadata` representation for both affected track cases.
+- Produces: snapshot expectations matching the media metadata fields emitted by current Music Assistant `dev`.
+
+**Environment gate:** Commit `6057196` installs `music-assistant-models==1.1.144`,
+whose serialization predates upstream PR 4793. If the red run shows only the
+older schema, record that evidence without changing snapshots, complete Tasks 3
+and 4, rebuild against current Music Assistant `dev`, and then resume this task.
 
 - [ ] **Step 1: Demonstrate the two existing snapshot failures**
 
@@ -104,20 +109,25 @@ Run:
 .venv/bin/pytest tests/test_parsers.py -q
 ```
 
-Expected: exactly two track snapshot mismatches whose only semantic difference is `audio_metadata`; all other parser tests pass.
+Expected on the pinned compatibility core: exactly two track snapshot mismatches
+whose only semantic difference is the obsolete `audio_metadata` field; all other
+parser tests pass. This proves the environment gate and is not a snapshot-update
+input.
 
 - [ ] **Step 2: Regenerate only parser snapshots**
 
-Run:
+After the Task 4 environment rebuild, run:
 
 ```bash
 .venv/bin/pytest tests/test_parsers.py --snapshot-update -q
 git diff -- tests/__snapshots__/test_parsers.ambr
 ```
 
-Expected: the test passes and the diff changes only the two affected serialized track snapshots.
+Expected: the test passes and the diff contains only model fields emitted by
+current Music Assistant `dev`, including the `artist_entity_type` and `life_span`
+fields introduced by upstream PR 4793.
 
-- [ ] **Step 3: Verify the pinned-core baseline**
+- [ ] **Step 3: Verify the current-core baseline**
 
 Run:
 
@@ -125,7 +135,8 @@ Run:
 .venv/bin/pytest -q
 ```
 
-Expected: `51 passed` with no failures.
+Expected: the full pre-feature suite passes with no failures; record the exact
+count because current `dev` may add upstream tests or model fields.
 
 - [ ] **Step 4: Commit**
 
