@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.6] - 2026-08-11
+
+### Added
+
+- Add an interactive KION Music sign-in flow with translated authentication errors.
+
+### Changed
+
+- Load recommendation rows on demand so opening recommendations no longer fetches every row at once.
+- Preserve existing configured accounts while moving OAuth token management into the sign-in flow.
+- Share concurrent requests for regular playlists, liked tracks, and My Mix while keeping their caches independent.
+- Update media metadata compatibility for current Music Assistant versions.
+
 ## [3.0.5] - 2026-07-16
 
 - feat: reverse-port the unported upstream mass-migrations (May 22 – Jun 19, pre-dating the reverse-sync radar): browse/recommendation labels localized via server translations (`strings.json` `media.folder`, replacing the in-code `BROWSE_NAMES_RU/EN` dicts), common-string references (upstream #4327), the unofficial-integration disclaimer entry (upstream #4164), and `RateLimited` for the 429 path (was `ResourceTemporarilyUnavailable`). Provider tree now matches upstream's inlined copy modulo method order.

@@ -2,7 +2,7 @@
 id: "0002"
 title: "Consolidate upstream reverse-sync changes"
 size: L
-status: inprogress
+status: done
 priority: P1
 effort_minutes: 180
 feature_id: RECOMMENDATIONS
@@ -128,4 +128,5 @@ Verified on 2026-08-11 against Music Assistant `dev` commit
 - Method-order checker: passed.
 - `pre-commit run --all-files`: all 16 hooks passed.
 - Merge-marker scan and `git diff --check`: no findings.
-- `VERSION`, `CHANGELOG.md`, `uv.lock`, and `pyproject.toml`: unchanged.
+- Release metadata: version `3.0.6` with one matching changelog entry.
+- `uv.lock` and `pyproject.toml`: unchanged.
