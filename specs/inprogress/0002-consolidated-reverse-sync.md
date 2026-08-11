@@ -118,8 +118,8 @@ Verified on 2026-08-11 against Music Assistant `dev` commit
 `music-assistant-models==1.1.185`:
 
 - Focused parser, recommendation, setup, config, provider, and streaming suites:
-  58 passed, including 7 snapshot assertions.
-- Full pytest suite: 77 passed, including 7 snapshot assertions.
+  59 passed, including 7 snapshot assertions.
+- Full pytest suite: 78 passed, including 7 snapshot assertions.
 - Ruff formatting: 16 files already formatted.
 - Ruff lint: all checks passed for `provider/` and `tests/`.
 - Mypy: no issues in 16 source files. Its cache was placed on `/mnt/data`
