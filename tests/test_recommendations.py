@@ -225,8 +225,10 @@ async def test_expired_tag_list_is_served_while_refreshing(
         return_value=(stale_tags, False, True)
     )
     refresh_gate = asyncio.Event()
+    refresh_started = asyncio.Event()
 
     async def _blocked_landing_tags() -> list[Any]:
+        refresh_started.set()
         await refresh_gate.wait()
         return []
 
@@ -246,6 +248,8 @@ async def test_expired_tag_list_is_served_while_refreshing(
     try:
         assert request.done()
         assert await request == stale_tags
+        await asyncio.wait_for(refresh_started.wait(), timeout=1)
+        assert any(not task.done() for task in background_tasks)
         provider.mass.cache.get_with_freshness.assert_awaited_once_with(
             "_get_valid_tags_for_category.mood",
             provider=provider.instance_id,
