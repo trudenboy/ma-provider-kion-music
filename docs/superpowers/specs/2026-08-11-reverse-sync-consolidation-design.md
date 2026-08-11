@@ -44,8 +44,9 @@ inlined upstream.
 5. Add single-flight request sharing for ordinary uncached data, regular
    playlists, and My Mix/My Wave, applying the final behavior from PR 5464 over
    the intermediate opt-out introduced and narrowed by PRs 5370 and 5430.
-6. Run full verification, complete one release-ready feature specification and
-   changelog entry, and prepare one replacement PR.
+6. Run full verification, complete one feature specification, and prepare one
+   replacement draft PR. Add the version bump and final changelog entry only
+   after review feedback is addressed, as required by repository policy.
 7. After the replacement branch is published and its PR exists, close the ten
    superseded draft PRs with a short factual pointer to the replacement.
 
@@ -109,8 +110,9 @@ mypy, the repository's method-order and upstream parity hooks, and
 
 ## GitHub Transition
 
-No existing draft PR is modified in place. The replacement PR targets `dev` and
-contains the consolidated implementation, tests, completed specification,
-changelog, and version change required by repository policy. Existing drafts are
-closed only after the replacement PR URL exists, making the transition auditable
-and reversible through Git history.
+No existing draft PR is modified in place. The replacement draft PR targets
+`dev` and initially contains the consolidated implementation, tests, and
+completed specification. Its final changelog entry and version change are added
+only after review feedback is addressed. Existing drafts are closed only after
+the replacement PR URL exists, making the transition auditable and reversible
+through Git history.
