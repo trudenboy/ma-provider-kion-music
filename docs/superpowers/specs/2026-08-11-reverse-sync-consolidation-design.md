@@ -41,9 +41,9 @@ inlined upstream.
 4. Move authentication into the interactive setup flow and expose only playback
    options through the provider options contract, incorporating PRs 5017, 5053,
    and 5058.
-5. Add single-flight request sharing for ordinary uncached data and regular
-   playlists while keeping My Mix/My Wave cursor-advancing calls independent, as
-   required by PRs 5370, 5430, and 5464.
+5. Add single-flight request sharing for ordinary uncached data, regular
+   playlists, and My Mix/My Wave, applying the final behavior from PR 5464 over
+   the intermediate opt-out introduced and narrowed by PRs 5370 and 5430.
 6. Run full verification, complete one release-ready feature specification and
    changelog entry, and prepare one replacement PR.
 7. After the replacement branch is published and its PR exists, close the ten
@@ -71,9 +71,12 @@ remain loadable after migration.
 ### Request Sharing
 
 Idempotent cached reads use Music Assistant's cache single-flight behavior so
-concurrent requests for the same key share one provider call. Regular playlist
-track reads are shareable. My Mix/My Wave reads are explicitly not shareable
-because each call advances rotor state and may send one-shot feedback.
+concurrent requests for the same key share one provider call. Caching remains
+split by playlist kind so regular, liked, and My Mix data keep independent cache
+keys and lifetimes. My Mix/My Wave reads are shareable in the final state: the
+provider-wide lock already serializes rotor state, and the one-shot
+`radioStarted` feedback is independently guarded. Explicit cache bypasses still
+perform their own fetches.
 
 ## Error Handling
 
@@ -96,8 +99,8 @@ Required coverage includes:
 - setup-flow token collection, retry, translated login failure, and options
   without authentication fields;
 - concurrent regular playlist callers sharing one fetch;
-- concurrent My Mix/My Wave callers each performing their own state-advancing
-  fetch;
+- concurrent My Mix/My Wave callers sharing one fetch while preserving cursor
+  and one-shot feedback behavior;
 - pagination termination and cancellation/error behavior for shared requests.
 
 Final verification consists of the full pytest suite, Ruff format and lint,
