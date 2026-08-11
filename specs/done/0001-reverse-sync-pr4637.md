@@ -35,4 +35,3 @@ specification 0002.
   `76b0299` and verify both updated snapshots match.
 - Inspect `tests/__snapshots__/test_parsers.ambr` and verify the only additions
   in that commit are the two `audio_metadata: None` fields.
-

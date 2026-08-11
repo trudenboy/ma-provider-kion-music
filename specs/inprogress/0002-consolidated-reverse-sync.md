@@ -110,3 +110,22 @@ sequenceDiagram
 | 4946, 4948 | Static labels, cache-only subtitles, unload and method-order follow-ups |
 | 5017, 5053, 5058 | Setup flow, provider options migration, translated login failure |
 | 5370, 5430, 5464 | Final split-cache and unconditional single-flight behavior |
+
+## Verification Evidence
+
+Verified on 2026-08-11 against Music Assistant `dev` commit
+`a91504084610a817212c17174662cf73a4829bd9` and
+`music-assistant-models==1.1.185`:
+
+- Focused parser, recommendation, setup, config, provider, and streaming suites:
+  58 passed, including 7 snapshot assertions.
+- Full pytest suite: 77 passed, including 7 snapshot assertions.
+- Ruff formatting: 16 files already formatted.
+- Ruff lint: all checks passed for `provider/` and `tests/`.
+- Mypy: no issues in 16 source files. Its cache was placed on `/mnt/data`
+  because the `/tmp` filesystem had insufficient free space; no repository
+  configuration changed.
+- Method-order checker: passed.
+- `pre-commit run --all-files`: all 16 hooks passed.
+- Merge-marker scan and `git diff --check`: no findings.
+- `VERSION`, `CHANGELOG.md`, `uv.lock`, and `pyproject.toml`: unchanged.
