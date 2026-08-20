@@ -2438,6 +2438,7 @@ class KionMusicProvider(MusicProvider):
         :param page: Page number (0 = all tracks limited by config, >0 = empty for pagination).
         :return: List of Track objects.
         """
+<<<<<<< ours
         # Liked tracks API returns all tracks at once, so only return tracks on page 0
         if page > 0:
             return []
@@ -2445,6 +2446,40 @@ class KionMusicProvider(MusicProvider):
         max_tracks_config = int(
             self.config.get_value(CONF_LIKED_TRACKS_MAX_TRACKS) or 500  # type: ignore[arg-type]
         )
+=======
+        tracks = await self.client.get_artist_tracks(prov_artist_id)
+        result = []
+        for track in tracks:
+            try:
+                result.append(parse_track(self, track))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing artist track: %s", err)
+        return result
+
+    # Library methods
+
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
+        """Retrieve library artists from KION Music."""
+        artists = await self.client.get_liked_artists()
+        for artist in artists:
+            try:
+                yield parse_artist(self, artist)
+            except InvalidDataError as err:
+                # only raised for a missing artist id, so the item is unidentifiable
+                self.report_skipped_sync_item(MediaType.ARTIST, None, err)
+
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
+        """Retrieve library albums from KION Music."""
+        batch_size = TRACK_BATCH_SIZE
+        albums = await self.client.get_liked_albums(batch_size=batch_size)
+        for album in albums:
+            try:
+                yield parse_album(self, album)
+            except InvalidDataError as err:
+                # album.id may still be usable even if one of its artists is not
+                item_id = str(album.id) if album.id is not None else None
+                self.report_skipped_sync_item(MediaType.ALBUM, item_id, err)
+>>>>>>> theirs
 
         # Fetch liked tracks (already sorted in reverse chronological order by api_client)
         track_shorts = await self.client.get_liked_tracks()
@@ -2481,7 +2516,50 @@ class KionMusicProvider(MusicProvider):
                 try:
                     tracks.append(parse_track(self, found))
                 except InvalidDataError as err:
+<<<<<<< ours
                     self.logger.debug("Error parsing liked track %s: %s", track_id, err)
+=======
+                    # track.id may still be usable even if its artist/album is not
+                    item_id = str(track.id) if track.id is not None else None
+                    self.report_skipped_sync_item(MediaType.TRACK, item_id, err)
+
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
+        """
+        Retrieve library playlists from KION Music.
+
+        Includes virtual playlists (My Mix and Liked Tracks if enabled), user-created playlists,
+        and user-liked editorial playlists (returned by a separate API endpoint).
+        """
+        yield await self.get_playlist(MY_WAVE_PLAYLIST_ID)
+        yield await self.get_playlist(LIKED_TRACKS_PLAYLIST_ID)
+        seen_ids: set[str] = set()
+        # User-created playlists
+        playlists = await self.client.get_user_playlists()
+        for playlist in playlists:
+            try:
+                parsed = parse_playlist(self, playlist)
+                seen_ids.add(parsed.item_id)
+                yield parsed
+            except InvalidDataError as err:
+                # mirrors the "owner_id:kind" id parse_playlist() derives
+                owner_id = str(playlist.owner.uid) if playlist.owner else str(self.client.user_id)
+                self.report_skipped_sync_item(
+                    MediaType.PLAYLIST, f"{owner_id}:{playlist.kind}", err
+                )
+        # User-liked editorial playlists (not in users_playlists_list)
+        liked_playlists = await self.client.get_liked_playlists()
+        for playlist in liked_playlists:
+            try:
+                parsed = parse_playlist(self, playlist)
+                if parsed.item_id not in seen_ids:
+                    yield parsed
+            except InvalidDataError as err:
+                # mirrors the "owner_id:kind" id parse_playlist() derives
+                owner_id = str(playlist.owner.uid) if playlist.owner else str(self.client.user_id)
+                self.report_skipped_sync_item(
+                    MediaType.PLAYLIST, f"{owner_id}:{playlist.kind}", err
+                )
+>>>>>>> theirs
 
         self.logger.debug("Liked tracks: fetched %s, parsed %s", len(track_shorts), len(tracks))
         return tracks
