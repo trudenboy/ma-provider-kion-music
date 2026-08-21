@@ -310,3 +310,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: fix missing album cover art in library
 - Reverse-synced upstream PR #4637 (WIP)
 - chore: update parser snapshots for the Music Assistant transcript fields
+- Reverse-synced upstream PR #5861 (WIP)
