@@ -318,3 +318,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reverse-synced upstream PR #4637 (WIP)
 - chore: update parser snapshots for the Music Assistant transcript fields
 - fix: retain library items that cannot be parsed by the provider
+- Reverse-synced upstream PR #5861 (WIP)
