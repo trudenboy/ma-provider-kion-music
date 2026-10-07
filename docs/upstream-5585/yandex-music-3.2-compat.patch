@@ -1,0 +1,70 @@
+diff --git a/music_assistant/providers/yandex_music/api_client.py b/music_assistant/providers/yandex_music/api_client.py
+index c9a7e09..97d5a28 100644
+--- a/music_assistant/providers/yandex_music/api_client.py
++++ b/music_assistant/providers/yandex_music/api_client.py
+@@ -553,2 +552,0 @@ class YandexMusicClient:
+-        if result is None:
+-            return []
+@@ -592,2 +589,0 @@ class YandexMusicClient:
+-            if result is None:
+-                return []
+@@ -610,2 +605,0 @@ class YandexMusicClient:
+-            if result is None:
+-                return []
+@@ -628,2 +621,0 @@ class YandexMusicClient:
+-            if result is None:
+-                return []
+@@ -1087 +1079,2 @@ class YandexMusicClient:
+-            return await c._request.get(url, params=params)  # type: ignore[no-any-return]
++            result = await c._request.get(url, params=params)
++            return result if isinstance(result, dict) else None
+@@ -1205 +1198 @@ class YandexMusicClient:
+-            result = await self._call_with_retry(lambda c: c.albums(album_ids))
++            result = await self._call_with_retry(lambda c: c.albums(list(album_ids)))
+@@ -1219 +1212 @@ class YandexMusicClient:
+-            result = await self._call_with_retry(lambda c: c.playlists_list(playlist_ids))
++            result = await self._call_with_retry(lambda c: c.playlists_list(list(playlist_ids)))
+@@ -2020 +2013 @@ class YandexMusicClient:
+-        async def _get(c: ClientAsync) -> dict[str, Any]:
++        async def _get(c: ClientAsync) -> dict[str, Any] | None:
+@@ -2026 +2019,2 @@ class YandexMusicClient:
+-            return await c._request.get(url)  # type: ignore[no-any-return]
++            result = await c._request.get(url)
++            return result if isinstance(result, dict) else None
+diff --git a/music_assistant/providers/yandex_music/manifest.json b/music_assistant/providers/yandex_music/manifest.json
+index b5d318f..86c5f84 100644
+--- a/music_assistant/providers/yandex_music/manifest.json
++++ b/music_assistant/providers/yandex_music/manifest.json
+@@ -10 +10 @@
+-  "requirements": ["yandex-music==3.0.0", "ya-passport-auth[ma]==2.2.0", "segno==1.6.6"],
++  "requirements": ["yandex-music[async]==3.2.0", "ya-passport-auth[ma]==2.2.0", "segno==1.6.6"],
+diff --git a/music_assistant/providers/yandex_music/streaming.py b/music_assistant/providers/yandex_music/streaming.py
+index 3bf9c29..4547165 100644
+--- a/music_assistant/providers/yandex_music/streaming.py
++++ b/music_assistant/providers/yandex_music/streaming.py
+@@ -348 +348 @@ class YandexMusicStreamingManager:
+-        self, download_infos: list[Any], preferred_quality: str | None
++        self, download_infos: list[DownloadInfo], preferred_quality: str | None
+diff --git a/tests/providers/yandex_music/conftest.py b/tests/providers/yandex_music/conftest.py
+index 980ce97..6b14c81 100644
+--- a/tests/providers/yandex_music/conftest.py
++++ b/tests/providers/yandex_music/conftest.py
+@@ -18,0 +19 @@ from music_assistant_models.media_items import ItemMapping
++from yandex_music import ClientAsync
+@@ -211,2 +212,2 @@ class StreamingProviderStubWithTracking:
+-# Minimal client-like object for yandex_music de_json (library requires client, not None)
+-DE_JSON_CLIENT = type("ClientStub", (), {"report_unknown_fields": False})()
++# Disconnected real client for library model deserialization.
++DE_JSON_CLIENT = ClientAsync()
+diff --git a/tests/providers/yandex_music/test_api_client.py b/tests/providers/yandex_music/test_api_client.py
+index 1081da0..bae1749 100644
+--- a/tests/providers/yandex_music/test_api_client.py
++++ b/tests/providers/yandex_music/test_api_client.py
+@@ -18,0 +19 @@ from ya_passport_auth import SecretStr
++from yandex_music import ClientAsync
+@@ -727 +728 @@ async def test_get_dashboard_stations_returns_personalized_stations() -> None:
+-    _de_client = type("C", (), {"report_unknown_fields": False})()
++    _de_client = ClientAsync()
+@@ -812 +813 @@ async def test_get_dashboard_stations_skips_user_type() -> None:
+-    _de_client = type("C", (), {"report_unknown_fields": False})()
++    _de_client = ClientAsync()
