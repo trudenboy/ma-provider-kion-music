@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.11] - 2026-10-07
+
+### Fixed
+- Preserve still-liked tracks when KION omits unavailable tracks from a successful batch response, without repeated sync warnings.
+- Keep liked-playlist browse failures separate from library sync failure reports.
+- Abort a rejected track batch instead of treating it as an empty library response or reconnecting unnecessarily.
+
 ## [3.0.10] - 2026-10-07
 
 ### Changed
