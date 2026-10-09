@@ -5,6 +5,7 @@ description = "KION Music provider for Music Assistant"
 requires-python = ">=3.14"
 dynamic = ["version"]
 dependencies = [
+  "yandex-music[async]==3.2.1",
 ]
 
 [project.optional-dependencies]
