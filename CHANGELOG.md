@@ -344,3 +344,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: retain library items that cannot be parsed by the provider
 - Reverse-synced upstream PR #6904 (WIP)
 - Reverse-synced upstream PR #7383 (WIP)
+- Reverse-synced upstream PR #7604 (WIP)
