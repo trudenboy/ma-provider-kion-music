@@ -7,7 +7,12 @@
   "codeowners": [
     "@trudenboy"
   ],
+<<<<<<< provider
   "tier": "community",
+||||||| upstream-base
+=======
+  "media_types": ["artist", "album", "track", "playlist"],
+>>>>>>> upstream-head
   "credits": [
     "[yandex-music-api](https://github.com/MarshalX/yandex-music-api)"
   ],
