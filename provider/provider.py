@@ -2454,14 +2454,84 @@ class KionMusicProvider(MusicProvider):
         :param page: Page number (0 = all tracks limited by config, >0 = empty for pagination).
         :return: List of Track objects.
         """
+<<<<<<< provider
         # Liked tracks API returns all tracks at once, so only return tracks on page 0
         if page > 0:
             return []
         max_tracks_config = int(
             self.config.get_value(CONF_LIKED_TRACKS_MAX_TRACKS) or 500  # type: ignore[arg-type]
         )
+||||||| upstream-base
+        tracks = await self.client.get_artist_tracks(prov_artist_id)
+        result = []
+        for track in tracks:
+            try:
+                result.append(parse_track(self, track))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing artist track: %s", err)
+        return result
 
+    # Library methods
+
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+        """Retrieve library artists from KION Music."""
+        artists = await self.client.get_liked_artists()
+        for artist in artists:
+            try:
+                yield parse_artist(self, artist)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library artist: %s", err)
+
+    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+        """Retrieve library albums from KION Music."""
+        batch_size = TRACK_BATCH_SIZE
+        albums = await self.client.get_liked_albums(batch_size=batch_size)
+        for album in albums:
+            try:
+                yield parse_album(self, album)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library album: %s", err)
+=======
+        tracks = await self.client.get_artist_tracks(prov_artist_id)
+        result = []
+        for track in tracks:
+            try:
+                result.append(parse_track(self, track))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing artist track: %s", err)
+        return result
+
+    # Library methods
+
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
+        """Retrieve library artists from KION Music."""
+        artists = await self.client.get_liked_artists()
+        for artist in artists:
+            try:
+                yield parse_artist(self, artist)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library artist: %s", err)
+
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
+        """Retrieve library albums from KION Music."""
+        batch_size = TRACK_BATCH_SIZE
+        albums = await self.client.get_liked_albums(batch_size=batch_size)
+        for album in albums:
+            try:
+                yield parse_album(self, album)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library album: %s", err)
+>>>>>>> upstream-head
+
+<<<<<<< provider
         # Fetch liked tracks (already sorted in reverse chronological order by api_client)
+||||||| upstream-base
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+        """Retrieve library tracks from KION Music."""
+=======
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
+        """Retrieve library tracks from KION Music."""
+>>>>>>> upstream-head
         track_shorts = await self.client.get_liked_tracks()
         if not track_shorts:
             self.logger.debug("No liked tracks found")
@@ -2498,8 +2568,16 @@ class KionMusicProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing liked track %s: %s", track_id, err)
 
+<<<<<<< provider
         self.logger.debug("Liked tracks: fetched %s, parsed %s", len(track_shorts), len(tracks))
         return tracks
+||||||| upstream-base
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+        """Retrieve library playlists from KION Music.
+=======
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
+        """Retrieve library playlists from KION Music.
+>>>>>>> upstream-head
 
     @use_cache(600)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
@@ -2664,6 +2742,7 @@ class KionMusicProvider(MusicProvider):
         """
         Get new editorial playlists.
 
+<<<<<<< provider
         :return: RecommendationFolder with new playlists, or None if unavailable.
         """
         result = await self.client.get_new_playlists()
@@ -2696,6 +2775,23 @@ class KionMusicProvider(MusicProvider):
             items=UniqueList(playlists),
             icon="mdi-playlist-star",
         )
+||||||| upstream-base
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item.
+
+        Uses windowed Range-request streaming to prevent Kion CDN drops.
+        Handles both raw (direct) and encrypted (encraw) transports.
+=======
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """Return the audio stream for the provider item.
+
+        Uses windowed Range-request streaming to prevent Kion CDN drops.
+        Handles both raw (direct) and encrypted (encraw) transports.
+>>>>>>> upstream-head
 
     @use_cache(3600)
     async def _get_top_picks_recommendations(self) -> RecommendationFolder | None:
